@@ -1,1 +1,1 @@
-# sensemap
+# sensmap
