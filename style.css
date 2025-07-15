@@ -6,6 +6,7 @@
 html, body {
   height: 100%;
   font-family: Arial, sans-serif;
+  overflow: hidden; /* 스크롤 방지 */
 }
 #map {
   position: absolute;
@@ -13,25 +14,43 @@ html, body {
   height: 100%;
   z-index: 1;
 }
-.profile-icon {
-  position: fixed;
-  top: 20px;
-  right: 20px;
-  background: white;
-  border-radius: 50%;
-  padding: 15px;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+
+/* === 검색창 위치 조정 === */
+.leaflet-control-geosearch.bar {
+  top: 15px;
+  left: 75px; /* 햄버거 메뉴 바로 옆으로 위치 조정 */
   z-index: 999;
+}
+
+/* === 검색창 X 버튼 숨기기 === */
+.leaflet-control-geosearch .reset {
+  display: none;
+}
+
+
+/* === 햄버거 메뉴 === */
+#hamburger-menu {
+  position: fixed;
+  top: 15px;
+  left: 15px;
+  z-index: 999;
+  background-color: white;
+  border-radius: 5px;
+  padding: 10px 15px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
   cursor: pointer;
+  font-size: 20px;
 }
-.profile-icon i {
-  font-size: 24px;
+#hamburger-menu:hover {
+  background-color: #f4f4f4;
 }
+
+/* === 토글 스위치 (항상 보이도록 수정) === */
 .toggle-container {
   position: fixed;
   top: 20px;
-  right: 80px;
-  z-index: 999;
+  right: 20px;
+  z-index: 999; /* 다른 UI 요소와 겹치지 않도록 z-index 설정 */
   display: flex;
   align-items: center;
   background-color: rgba(255, 255, 255, 0.8);
@@ -80,6 +99,90 @@ input:checked + .slider:before {
   font-weight: bold;
   color: #333;
 }
+
+
+/* === 사이드 메뉴 === */
+.side-nav {
+  height: 100%;
+  width: 0;
+  position: fixed;
+  z-index: 10001;
+  top: 0;
+  left: 0;
+  background-color: #fff;
+  overflow-x: hidden;
+  transition: 0.5s;
+  padding-top: 60px;
+  box-shadow: 3px 0 6px rgba(0,0,0,0.2);
+}
+.side-nav a {
+  padding: 12px 15px 12px 30px;
+  text-decoration: none;
+  font-size: 18px;
+  color: #333;
+  display: block;
+  transition: 0.3s;
+}
+.side-nav a:hover {
+  background-color: #f1f1f1;
+  color: #000;
+}
+.side-nav a i {
+  margin-right: 15px;
+  width: 20px;
+  text-align: center;
+}
+.side-nav .close-btn {
+  position: absolute;
+  top: 0;
+  right: 15px;
+  font-size: 36px;
+  margin-left: 50px;
+}
+
+/* === 배경 오버레이 === */
+#overlay {
+  position: fixed;
+  display: none;
+  width: 100%;
+  height: 100%;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0,0,0,0.5);
+  z-index: 10000;
+  transition: background-color 0.5s;
+}
+
+/* === 지도 범례 === */
+.legend {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  background: rgba(255, 255, 255, 0.8);
+  padding: 15px;
+  border-radius: 8px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+  z-index: 998;
+}
+.legend h4 {
+  margin: 0 0 10px 0;
+  font-size: 16px;
+}
+.legend div {
+  font-size: 14px;
+  margin-bottom: 5px;
+}
+.legend .color-box {
+  display: inline-block;
+  width: 15px;
+  height: 15px;
+  margin-right: 8px;
+  vertical-align: middle;
+  border: 1px solid #777;
+}
+
 .modal {
   display: none;
   position: fixed;
@@ -164,8 +267,6 @@ button[type="submit"] {
   from { bottom: 30px; opacity: 1; }
   to { bottom: 0; opacity: 0; }
 }
-
-/* === 팝업 내 길찾기 버튼 스타일 === */
 .route-btn-group {
   display: flex;
   justify-content: space-between;
