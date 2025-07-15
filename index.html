@@ -6,23 +6,42 @@
   <title>Sensory Map</title>
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-geosearch@3/dist/geosearch.css" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css" />
 </head>
 <body>
   <div id="map"></div>
 
-  <div class="profile-icon" id="profileIcon">
-    <i class="fas fa-user-circle"></i>
+  <div id="hamburger-menu">
+    <i class="fas fa-bars"></i>
   </div>
 
   <div class="toggle-container">
     <label class="switch">
-      <input type="checkbox" id="showRegisteredToggle">
+      <input type="checkbox" id="showRegisteredToggle" checked>
       <span class="slider"></span>
     </label>
     <span id="toggleLabel">Show Sensory Data</span>
   </div>
+
+  <div id="side-menu" class="side-nav">
+    <a href="javascript:void(0)" class="close-btn" id="close-menu">&times;</a>
+    <a href="#" id="menu-profile"><i class="fas fa-user-circle"></i> 프로필</a>
+    <a href="#" id="menu-filter"><i class="fas fa-filter"></i> 감각 필터</a>
+    <a href="#" id="menu-settings"><i class="fas fa-cog"></i> 설정</a>
+    <a href="#" id="menu-help"><i class="fas fa-question-circle"></i> 도움말</a>
+    <a href="#" id="menu-contact"><i class="fas fa-envelope"></i> 문의</a>
+  </div>
+
+  <div class="legend">
+    <h4>감각 정보</h4>
+    <div><span class="color-box" style="background-color: rgba(255, 0, 0, 0.6);"></span> 매우 불편</div>
+    <div><span class="color-box" style="background-color: rgba(255, 165, 0, 0.5);"></span> 약간 불편</div>
+    <div><span class="color-box" style="background-color: rgba(0, 128, 0, 0.4);"></span> 쾌적함</div>
+  </div>
+  
+  <div id="overlay"></div>
 
   <div class="modal" id="sensoryModal">
     <div class="modal-content">
@@ -65,6 +84,7 @@
   <div id="toast">✔️ Info saved!</div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-geosearch@3/dist/geosearch.umd.js"></script>
   <script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.min.js"></script>
   <script src="script.js"></script>
 </body>
