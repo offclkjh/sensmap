@@ -6,393 +6,510 @@
 // 적절히 대체해야 함.
 // =================================================================
 
-
 // --- 1. GLOBAL VARIABLES & MAP INITIALIZATION ---
 
 const map = L.map('map').setView([37.5665, 126.9780], 13);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  attribution: '© OpenStreetMap contributors'
+    attribution: '© OpenStreetMap contributors'
 }).addTo(map);
 
+const GRID_CELL_SIZE = 10;
+let gridData = new Map();
 let clickedLocation = null;
 let tempMarker = null;
-let markersLayer = L.markerClusterGroup();
-map.addLayer(markersLayer);
-
-// --- Route Planning Variables ---
-let isPlanningRoute = false;
+let gridVisualLayers = [];
 let startPoint = null;
 let endPoint = null;
 let startMarker = null;
 let endMarker = null;
-let routeControl = null;
+let currentRouteLayer = null;
+let isPlanningRoute = false;
+let tempGridHighlighter = null;
 
-// --- 2. CORE FUNCTIONS ---
+// --- 2. GRID SYSTEM FUNCTIONS ---
 
-/**
- * Renders saved sensory data markers on the map.
- * Uses Marker Clustering and highlights markers based on user profile.
- */
-function renderSavedMarkers() {
-  markersLayer.clearLayers();
+function latLngToGridCell(latlng) {
+    const projected = L.CRS.EPSG3857.project(latlng);
+    const x = Math.floor(projected.x / GRID_CELL_SIZE);
+    const y = Math.floor(projected.y / GRID_CELL_SIZE);
+    return { x, y };
+}
 
-  const savedData = JSON.parse(localStorage.getItem('sensoryData') || '[]');
-  const profile = JSON.parse(localStorage.getItem('sensoryProfile') || '{}');
-  const votedItems = JSON.parse(localStorage.getItem('votedSensoryItems') || '[]');
+function gridCellToLatLngBounds(gridIndices) {
+    const bottomLeftX = gridIndices.x * GRID_CELL_SIZE;
+    const bottomLeftY = gridIndices.y * GRID_CELL_SIZE;
+    const topRightX = (gridIndices.x + 1) * GRID_CELL_SIZE;
+    const topRightY = (gridIndices.y + 1) * GRID_CELL_SIZE;
+    const bottomLeftPoint = L.point(bottomLeftX, bottomLeftY);
+    const topRightPoint = L.point(topRightX, topRightY);
+    const bottomLeftLatLng = L.CRS.EPSG3857.unproject(bottomLeftPoint);
+    const topRightLatLng = L.CRS.EPSG3857.unproject(topRightPoint);
+    return L.latLngBounds(bottomLeftLatLng, topRightLatLng);
+}
 
-  savedData.forEach(data => {
-    // 이전 데이터를 위해 ID가 없으면 생성
-    if (!data.id) {
-        data.id = new Date(data.timestamp).getTime();
+function updateGridData(gridIndices, reportData) {
+    const gridKey = `${gridIndices.x},${gridIndices.y}`;
+    if (!gridData.has(gridKey)) {
+        gridData.set(gridKey, {
+            avgNoise: 0, avgLight: 0, avgOdor: 0, avgCrowd: 0,
+            reportCount: 0, reports: []
+        });
     }
-      
-    let isHighAlert = false;
-    if (Object.keys(profile).length > 0) {
-      if (Number(data.light) > Number(profile.lightThreshold) ||
-          Number(data.noise) > Number(profile.noiseThreshold) ||
-          Number(data.odor) > Number(profile.odorThreshold) ||
-          Number(data.crowd) > Number(profile.crowdThreshold)) {
-        isHighAlert = true;
-      }
-    }
+    const cellData = gridData.get(gridKey);
+    cellData.reports.push(reportData);
+    const N = cellData.reports.length;
+    cellData.avgNoise = (cellData.avgNoise * (N - 1) + Number(reportData.noise)) / N;
+    cellData.avgLight = (cellData.avgLight * (N - 1) + Number(reportData.light)) / N;
+    cellData.avgOdor = (cellData.avgOdor * (N - 1) + Number(reportData.odor)) / N;
+    cellData.avgCrowd = (cellData.avgCrowd * (N - 1) + Number(reportData.crowd)) / N;
+    cellData.reportCount = N;
+    localStorage.setItem('gridData', JSON.stringify(Array.from(gridData.entries())));
+    console.log(`Grid cell ${gridKey} updated.`, cellData);
+}
 
-    const average = (Number(data.light) + Number(data.noise) + Number(data.odor) + Number(data.crowd)) / 4;
-    let color = "green";
-    if (average >= 7) color = "red";
-    else if (average >= 4) color = "orange";
+// --- 3. VISUALIZATION FUNCTIONS ---
 
-    const iconHtml = `<img src='https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-${color}.png' style='width: 25px; height: 41px;'>`;
-
-    const marker = L.marker([data.location.lat, data.location.lng], {
-      icon: L.divIcon({
-        className: isHighAlert ? 'high-alert-marker' : '',
-        html: iconHtml,
-        iconSize: [25, 41],
-        iconAnchor: [12, 41]
-      })
+function renderGridVisuals() {
+    clearGridVisuals();
+    gridData.forEach((cellData, gridKey) => {
+        const totalAvg = (cellData.avgNoise + cellData.avgLight + cellData.avgOdor + cellData.avgCrowd) / 4;
+        if (totalAvg === 0) return;
+        let color = 'rgba(0, 128, 0, 0.4)';
+        if (totalAvg >= 7) color = 'rgba(255, 0, 0, 0.6)';
+        else if (totalAvg >= 4) color = 'rgba(255, 165, 0, 0.5)';
+        const indices = gridKey.split(',');
+        const gridIndices = { x: Number(indices[0]), y: Number(indices[1]) };
+        const bounds = gridCellToLatLngBounds(gridIndices);
+        const center = bounds.getCenter();
+        const circle = L.circle(center, {
+            color: color, fillColor: color,
+            fillOpacity: parseFloat(color.split(',')[3]),
+            radius: GRID_CELL_SIZE * 1.5,
+            interactive: true
+        }).addTo(map);
+        circle.bindPopup(`
+            <div style="font-weight:bold; margin-bottom:5px;">Avg. Sensory Info</div>
+            Noise: <b>${cellData.avgNoise.toFixed(1)}</b><br>
+            Light: <b>${cellData.avgLight.toFixed(1)}</b><br>
+            Odor: <b>${cellData.avgOdor.toFixed(1)}</b><br>
+            Crowd: <b>${cellData.avgCrowd.toFixed(1)}</b><br>
+            <hr style="margin:5px 0;">
+            Total Reports: <b>${cellData.reportCount}</b>
+        `);
+        gridVisualLayers.push(circle);
     });
+}
 
-    const isVoted = votedItems.includes(data.id);
+function clearGridVisuals() {
+    gridVisualLayers.forEach(layer => map.removeLayer(layer));
+    gridVisualLayers = [];
+}
 
-    const popupContent = `
-      <div style="padding: 10px; max-width: 220px;">
-        <p><strong>Light:</strong> ${data.light} | <strong>Noise:</strong> ${data.noise}</p>
-        <p><strong>Odor:</strong> ${data.odor} | <strong>Crowd:</strong> ${data.crowd}</p>
-        <p><strong>Wheelchair Access:</strong> ${data.wheelchair ? 'Yes' : 'No'}</p>
-        ${data.memo ? `<p><strong>Memo:</strong> ${data.memo}</p>` : ''}
+// --- 4. ROUTE PLANNING FUNCTIONS ---
+
+async function fetchWalkRoute(startCoords, endCoords) {
+    const apiKey = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjljN2FhNDU2NjRlZTQ3YzlhODg5YTM4Yjg4YmYyOWVmIiwiaCI6Im11cm11cjY0In0=";
+    const baseUrl = "https://api.openrouteservice.org/v2/directions/foot-walking/geojson";
+    const alternatives = 'alternative_routes={"target_count":3,"weight_factor":1.4,"share_factor":0.6}';
+    const url = `${baseUrl}?${alternatives}`;
+    const body = {
+        coordinates: [
+            [startCoords.lng, startCoords.lat],
+            [endCoords.lng, endCoords.lat]
+        ]
+    };
+    try {
+        const response = await fetch(url, {
+            method: "POST",
+            headers: {
+                "Authorization": apiKey, "Content-Type": "application/json; charset=utf-8",
+                "Accept": "application/json, application/geo+json, application/gpx+xml, img/png; charset=utf-8"
+            },
+            body: JSON.stringify(body)
+        });
+        if (!response.ok) {
+            const errorData = await response.json();
+            console.error("ORS API Error:", errorData);
+            throw new Error(`API Error: ${errorData.error?.message || response.status}`);
+        }
+        return await response.json();
+    } catch (err) {
+        console.error("Error in fetchWalkRoute:", err);
+        throw err;
+    }
+}
+
+function calculateRouteSensoryCost(routeFeature) {
+    let totalCost = 0;
+    const profile = JSON.parse(localStorage.getItem('sensoryProfile') || '{}');
+    const sensitivities = {
+        noise: (Number(profile.noiseThreshold) || 0) / 10,
+        light: (Number(profile.lightThreshold) || 0) / 10,
+        odor: (Number(profile.odorThreshold) || 0) / 10,
+        crowd: (Number(profile.crowdThreshold) || 0) / 10,
+    };
+    if (Object.values(sensitivities).every(s => s === 0)) return 0;
+    const coordinates = routeFeature.geometry.coordinates;
+    const uniqueGridCells = new Set();
+    for (const coord of coordinates) {
+        const latlng = L.latLng(coord[1], coord[0]);
+        const gridIndices = latLngToGridCell(latlng);
+        const gridKey = `${gridIndices.x},${gridIndices.y}`;
+        if (!uniqueGridCells.has(gridKey)) {
+            uniqueGridCells.add(gridKey);
+            if (gridData.has(gridKey)) {
+                const cellData = gridData.get(gridKey);
+                let cellCost = 0;
+                cellCost += (cellData.avgNoise / 10) * sensitivities.noise;
+                cellCost += (cellData.avgLight / 10) * sensitivities.light;
+                cellCost += (cellData.avgOdor / 10) * sensitivities.odor;
+                cellCost += (cellData.avgCrowd / 10) * sensitivities.crowd;
+                totalCost += cellCost;
+            }
+        }
+    }
+    return totalCost;
+}
+
+async function calculateAndDrawRoute() {
+    if (!startPoint || !endPoint) {
+        showToast("Please set both start and end points.");
+        return;
+    }
+    if (currentRouteLayer) {
+        map.removeLayer(currentRouteLayer);
+        currentRouteLayer = null;
+    }
+
+    try {
+        const geojson = await fetchWalkRoute(startPoint, endPoint);
         
-        <div class="vote-container">
-          <button class="vote-btn" data-id="${data.id}" data-vote="up" ${isVoted ? 'disabled' : ''}>👍 공감 <span class="upvote-count">${data.upvotes || 0}</span></button>
-          <button class="vote-btn" data-id="${data.id}" data-vote="down" ${isVoted ? 'disabled' : ''}>👎 비공감 <span class="downvote-count">${data.downvotes || 0}</span></button>
-        </div>
+        // Log GeoJSON for debugging
+        console.log("GeoJSON Response:", JSON.stringify(geojson, null, 2));
+        
+        // Check if the GeoJSON response is valid and contains features
+        if (!geojson || !geojson.features || !geojson.features.length) {
+            showToast("No routes found in API response.", true);
+            console.error("Invalid GeoJSON response:", geojson);
+            return;
+        }
 
-        <p style="border-top: 1px solid #eee; margin-top: 10px; padding-top: 5px;">
-          <small>Registered: ${new Date(data.timestamp).toLocaleString()}</small>
-        </p>
-        <button class="delete-sensory-btn" data-id="${data.id}" style="margin-top:10px; width:100%; padding:5px; background: #dc3545; color:white; border:none; border-radius:5px; cursor:pointer;">🗑 Delete</button>
-      </div>
-    `;
-    marker.bindPopup(popupContent);
-    markersLayer.addLayer(marker);
-  });
+        // Validate GeoJSON features for LineString and sufficient coordinates
+        const routesWithCost = geojson.features
+            .filter(feature => 
+                feature.geometry && 
+                feature.geometry.type === 'LineString' && 
+                feature.geometry.coordinates && 
+                feature.geometry.coordinates.length >= 2 &&
+                feature.geometry.coordinates.every(coord => Array.isArray(coord) && coord.length === 2 && typeof coord[0] === 'number' && typeof coord[1] === 'number')
+            )
+            .map(route => {
+                const sensoryCost = calculateRouteSensoryCost(route);
+                const distance = route.properties?.summary?.distance || 0;
+                const duration = route.properties?.summary?.duration || 0;
+                const combinedCost = sensoryCost * 2000 + distance;
+                return { feature: route, sensoryCost, combinedCost, distance, duration };
+            });
+
+        // Check if any valid routes were found
+        if (routesWithCost.length === 0) {
+            showToast("No valid routes with proper coordinates found.", true);
+            console.error("No valid routes in GeoJSON:", geojson);
+            return;
+        }
+
+        // Sort routes by combined cost
+        routesWithCost.sort((a, b) => a.combinedCost - b.combinedCost);
+        const bestRoute = routesWithCost[0];
+        
+        // Find the shortest route by distance
+        const shortestRoute = geojson.features.find(r => 
+            r.properties?.summary?.distance === Math.min(...geojson.features.map(f => f.properties?.summary?.distance || Infinity))
+        ) || geojson.features[0];
+
+        console.log("Routes Analyzed:", routesWithCost);
+
+        const drawableLayers = [];
+
+        // Create best route layer
+        const bestRouteLayer = L.geoJSON(bestRoute.feature, {
+            style: { color: '#007BFF', weight: 6, opacity: 0.9 }
+        });
+        try {
+            const bounds = bestRouteLayer.getBounds();
+            if (bounds.isValid()) {
+                bestRouteLayer.bindPopup(
+                    `<b>Comfortable Route</b><br>Distance: ${(bestRoute.distance / 1000).toFixed(2)} km<br>Sensory Score: ${bestRoute.sensoryCost.toFixed(2)}`
+                );
+                drawableLayers.push(bestRouteLayer);
+            } else {
+                console.warn("Best route layer has invalid bounds:", bestRoute.feature);
+            }
+        } catch (e) {
+            console.error("Could not process 'best route' layer:", e, bestRoute.feature);
+        }
+
+        // Create shortest route layer if different from best route
+        if (bestRoute.feature !== shortestRoute && shortestRoute) {
+            const shortestRouteLayer = L.geoJSON(shortestRoute, {
+                style: { color: 'gray', weight: 5, opacity: 0.6, dashArray: '5, 10' }
+            });
+            try {
+                const bounds = shortestRouteLayer.getBounds();
+                if (bounds.isValid()) {
+                    const shortestDistance = shortestRoute.properties?.summary?.distance || 0;
+                    shortestRouteLayer.bindPopup(
+                        `<b>Shortest Route</b><br>Distance: ${(shortestDistance / 1000).toFixed(2)} km`
+                    );
+                    drawableLayers.push(shortestRouteLayer);
+                } else {
+                    console.warn("Shortest route layer has invalid bounds:", shortestRoute);
+                }
+            } catch (e) {
+                console.error("Could not process 'shortest route' layer:", e, shortestRoute);
+            }
+        }
+
+        // Draw routes if valid layers exist
+        if (drawableLayers.length > 0) {
+            currentRouteLayer = L.layerGroup(drawableLayers).addTo(map);
+            try {
+                const groupBounds = currentRouteLayer.getBounds();
+                if (groupBounds.isValid()) {
+                    map.fitBounds(groupBounds);
+                    if (bestRoute.feature !== shortestRoute) {
+                        showToast("✨ A more comfortable route was found!");
+                    } else {
+                        showToast("✔️ The shortest route is the most comfortable!");
+                    }
+                } else {
+                    // Fallback to zooming to start and end points
+                    const fallbackBounds = L.latLngBounds([startPoint, endPoint]);
+                    map.fitBounds(fallbackBounds);
+                    showToast("Route drawn, but zoomed to start/end points due to invalid bounds.", true);
+                    console.warn("Invalid bounds for layer group, using fallback:", drawableLayers);
+                }
+            } catch (e) {
+                // Fallback to zooming to start and end points
+                const fallbackBounds = L.latLngBounds([startPoint, endPoint]);
+                map.fitBounds(fallbackBounds);
+                showToast("Route drawn, but zoomed to start/end points due to bounds error.", true);
+                console.error("Error accessing layer group bounds:", e, drawableLayers);
+            }
+        } else {
+            showToast("No valid routes could be drawn.", true);
+            console.error("No drawable layers created:", routesWithCost);
+        }
+
+        document.getElementById('findRouteBtn').textContent = 'Clear Route';
+
+    } catch (err) {
+        showToast(`Route Error: ${err.message}`, true);
+        console.error("Error in calculateAndDrawRoute:", err);
+    }
 }
 
-/**
- * Shows a temporary toast message at the bottom of the screen.
- * @param {string} msg - The message to display.
- * @param {boolean} isError - Optional flag for error styling.
- */
-function showToast(msg, isError = false) {
-  const toast = document.getElementById("toast");
-  toast.className = "show";
-  toast.innerHTML = isError ? `❌ ${msg}` : `💡 ${msg}`;
-  toast.style.backgroundColor = isError ? '#c73e3e' : '#323232';
-  setTimeout(() => {
-      toast.className = toast.className.replace("show", "");
-  }, 3000);
-}
-
-// --- Route Planning Functions ---
-
-/**
- * Resets all route-related variables and removes layers from the map.
- */
 function resetRoutePlanning() {
-    isPlanningRoute = false;
-    startPoint = null;
-    endPoint = null;
+    if (currentRouteLayer) map.removeLayer(currentRouteLayer);
     if (startMarker) map.removeLayer(startMarker);
     if (endMarker) map.removeLayer(endMarker);
-    if (routeControl) map.removeControl(routeControl);
+    
+    currentRouteLayer = null;
+    startPoint = null;
+    endPoint = null;
     startMarker = null;
     endMarker = null;
-    routeControl = null;
+    isPlanningRoute = false;
     document.getElementById('findRouteBtn').textContent = 'Find My Route';
+    showToast('Route cleared.');
 }
 
-/**
- * Handles clicks on the map when in route planning mode.
- * @param {L.latlng} latlng - The location of the click.
- */
-function handleRoutePlanningClick(latlng) {
-    if (!startPoint) {
+function setRoutePoint(latlng, type) {
+    const iconUrl = type === 'start'
+        ? 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png'
+        : 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png';
+    const markerOptions = { icon: L.icon({ iconUrl, iconSize: [25, 41], iconAnchor: [12, 41] }) };
+    if (type === 'start') {
+        if (startMarker) map.removeLayer(startMarker);
         startPoint = latlng;
-        startMarker = L.marker(latlng, {
-            icon: L.icon({
-                iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
-                iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41]
-            })
-        }).addTo(map).bindPopup('<b>Start Point</b>').openPopup();
-        showToast('Start point set. Now click to set your DESTINATION.');
-    } else if (!endPoint) {
+        startMarker = L.marker(latlng, markerOptions).addTo(map);
+        showToast('Start point set!');
+    } else {
+        if (endMarker) map.removeLayer(endMarker);
         endPoint = latlng;
-        endMarker = L.marker(latlng, {
-            icon: L.icon({
-                iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
-                iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41]
-            })
-        }).addTo(map).bindPopup('<b>Destination</b>').openPopup();
-        
-        isPlanningRoute = false; // End planning mode immediately
+        endMarker = L.marker(latlng, markerOptions).addTo(map);
+        showToast('End point set!');
+    }
+    map.closePopup();
+    if (startPoint && endPoint) {
         calculateAndDrawRoute();
     }
 }
 
-/**
- * Calculates and displays the route on the map using the start and end points.
- */
-function calculateAndDrawRoute() {
-    if (!startPoint || !endPoint) return;
-
-    routeControl = L.Routing.control({
-        waypoints: [ L.latLng(startPoint.lat, startPoint.lng), L.latLng(endPoint.lat, endPoint.lng) ],
-        lineOptions: { styles: [{ color: '#1E90FF', weight: 5, opacity: 0.8 }] },
-        routeWhileDragging: false,
-        show: false,
-        addWaypoints: false,
-        createMarker: () => null
-    })
-    .on('routesfound', function(e) {
-        showToast('Route calculated!');
+function handleManualRoutePlanning(latlng) {
+    if (!startPoint) {
+        setRoutePoint(latlng, 'start');
+        showToast('Start point set. Click map for End point.');
+    } else if (!endPoint) {
+        setRoutePoint(latlng, 'end');
+        isPlanningRoute = false;
         document.getElementById('findRouteBtn').textContent = 'Clear Route';
-    })
-    .on('routingerror', function(e) {
-        showToast('Error: Could not find a route.', true);
-        resetRoutePlanning();
-    })
-    .addTo(map);
+    }
 }
 
-/**
- * 신뢰도 투표를 처리하고 UI를 즉시 업데이트합니다.
- * @param {string} id - 투표할 데이터의 고유 ID
- * @param {string} voteType - 'up' 또는 'down'
- */
-function handleVote(id, voteType) {
-  let votedItems = JSON.parse(localStorage.getItem('votedSensoryItems') || '[]');
-  const numericId = Number(id);
+// --- 5. EVENT LISTENERS ---
 
-  if (votedItems.includes(numericId)) {
-    showToast("이미 평가한 항목입니다.", true);
-    return;
-  }
-
-  let allData = JSON.parse(localStorage.getItem('sensoryData') || '[]');
-  const dataIndex = allData.findIndex(d => d.id === numericId);
-
-  if (dataIndex === -1) return;
-
-  const targetData = allData[dataIndex];
-
-  if (voteType === 'up') {
-    targetData.upvotes = (targetData.upvotes || 0) + 1;
-  } else if (voteType === 'down') {
-    targetData.downvotes = (targetData.downvotes || 0) + 1;
-  }
-
-  votedItems.push(numericId);
-  localStorage.setItem('votedSensoryItems', JSON.stringify(votedItems));
-  localStorage.setItem('sensoryData', JSON.stringify(allData));
-  
-  showToast("평가해 주셔서 감사합니다!");
-
-  const openPopup = map._popup;
-  if (openPopup && openPopup.isOpen()) {
-    const popupContent = openPopup.getContent();
-    const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = popupContent;
-    
-    const popupId = tempDiv.querySelector('.vote-btn')?.getAttribute('data-id');
-    if (popupId === id) {
-        if (voteType === 'up') {
-            tempDiv.querySelector('.upvote-count').textContent = targetData.upvotes;
-        } else {
-            tempDiv.querySelector('.downvote-count').textContent = targetData.downvotes;
-        }
-        
-        tempDiv.querySelectorAll('.vote-btn').forEach(btn => btn.disabled = true);
-        openPopup.setContent(tempDiv.innerHTML);
-    }
-  }
-}
-
-
-// --- 3. EVENT LISTENERS ---
-
-// Map click event: Delegates to route planning or sensory info creation.
-map.on('click', function(e) {
-  if (isPlanningRoute) {
-    handleRoutePlanningClick(e.latlng);
-    return;
-  }
-  
-  if (tempMarker) map.removeLayer(tempMarker);
-  clickedLocation = e.latlng;
-  tempMarker = L.marker(e.latlng, { zIndexOffset: 1000 }).addTo(map);
-  tempMarker.bindPopup(`
-    <div style="padding: 10px; text-align: center;">
-      <p>Register sensory info for this spot?</p>
-      <button id="openSensoryBtn" style="width:100%;">Register</button>
-    </div>
-  `).openPopup();
-});
-
-// Listener for dynamically created buttons
-document.addEventListener('click', function (e) {
-  if (e.target?.id === 'openSensoryBtn') {
-    document.getElementById('sensoryModal').style.display = 'block';
-  }
-
-  // 삭제 로직: ID 기반으로 수정
-  if (e.target?.classList.contains('delete-sensory-btn')) {
-    const id = e.target.getAttribute('data-id'); // index 대신 id 사용
-    const allData = JSON.parse(localStorage.getItem('sensoryData') || '[]');
-    const filteredData = allData.filter(data => data.id !== Number(id)); // ID로 필터링
-    localStorage.setItem('sensoryData', JSON.stringify(filteredData));
-
-    if (document.getElementById('showRegisteredToggle').checked) {
-      renderSavedMarkers();
-    }
-    showToast("Deleted!");
-    map.closePopup();
-  }
-    
-  // 신뢰도 투표 버튼 로직
-  if (e.target?.classList.contains('vote-btn')) {
-    const id = e.target.getAttribute('data-id');
-    const voteType = e.target.getAttribute('data-vote');
-    handleVote(id, voteType);
-  }
-});
-
-// Toggle to show/hide registered markers
-document.getElementById('showRegisteredToggle')?.addEventListener('change', function() {
-  if (this.checked) {
-    renderSavedMarkers();
-  } else {
-    markersLayer.clearLayers();
-  }
-});
-
-
-// --- 4. MODAL & FORM HANDLING ---
-
-// Sensory Info Form Submission
-document.getElementById('sensoryForm')?.addEventListener('submit', function(e) {
-  e.preventDefault();
-  if (!clickedLocation) return;
-
-  const formData = {
-    id: Date.now(), // 고유 ID 생성
-    upvotes: 0,     // 신뢰도 데이터 추가
-    downvotes: 0,   // 신뢰도 데이터 추가
-    light: this.light.value,
-    noise: this.noise.value,
-    odor: this.odor.value,
-    crowd: this.crowd.value,
-    wheelchair: this.wheelchair.checked,
-    memo: this.memo.value.trim(),
-    location: { lat: clickedLocation.lat, lng: clickedLocation.lng },
-    timestamp: new Date().toISOString()
-  };
-
-  const existingData = JSON.parse(localStorage.getItem('sensoryData') || '[]');
-  existingData.push(formData);
-  localStorage.setItem('sensoryData', JSON.stringify(existingData));
-
-  if (tempMarker) {
-    map.removeLayer(tempMarker);
-    tempMarker = null;
-  }
-  this.reset();
-  document.getElementById('sensoryModal').style.display = 'none';
-  clickedLocation = null;
-  if (document.getElementById('showRegisteredToggle').checked) {
-      renderSavedMarkers();
-  }
-  showToast("Sensory info saved!");
-});
-
-// Profile Form Submission
-document.getElementById('profileForm')?.addEventListener('submit', function(e) {
-  e.preventDefault();
-  const profileData = {
-    lightThreshold: this.lightThreshold.value,
-    noiseThreshold: this.noiseThreshold.value,
-    odorThreshold: this.odorThreshold.value,
-    crowdThreshold: this.crowdThreshold.value
-  };
-  localStorage.setItem('sensoryProfile', JSON.stringify(profileData));
-  document.getElementById('profileModal').style.display = 'none';
-  if (document.getElementById('showRegisteredToggle').checked) {
-      renderSavedMarkers();
-  }
-  showToast("Preferences saved!");
-});
-
-// "Find My Route" Button
-document.getElementById('findRouteBtn')?.addEventListener('click', function () {
-    if (routeControl) {
-        resetRoutePlanning();
-        showToast('Route cleared.');
+map.on('click', function (e) {
+    if (isPlanningRoute) {
+        handleManualRoutePlanning(e.latlng);
         return;
     }
+    if (tempGridHighlighter) map.removeLayer(tempGridHighlighter);
+    const gridIndices = latLngToGridCell(e.latlng);
+    console.log("Clicked Grid Cell:", gridIndices);
+    const gridBounds = gridCellToLatLngBounds(gridIndices);
+    tempGridHighlighter = L.rectangle(gridBounds, { color: "#ff7800", weight: 1, fillOpacity: 0.3 }).addTo(map);
+    if (tempMarker) map.removeLayer(tempMarker);
+    clickedLocation = e.latlng;
+    tempMarker = L.marker(e.latlng, { zIndexOffset: 1000 }).addTo(map);
+    tempMarker.bindPopup(`
+        <div style="padding: 10px; text-align:center; width:180px;">
+            <p style="margin-bottom: 10px;"><strong>What would you like to do?</strong></p>
+            <div class="route-btn-group" style="margin-bottom: 10px;">
+                <button class="popup-route-btn" data-type="start" data-lat="${e.latlng.lat}" data-lng="${e.latlng.lng}">Set as Start</button>
+                <button class="popup-route-btn" data-type="end" data-lat="${e.latlng.lat}" data-lng="${e.latlng.lng}">Set as End</button>
+            </div>
+            <button id="openSensoryBtn" style="width:100%; background-color:#6c757d; color:white; border:none; padding: 8px;">Register Sensory Info</button>
+        </div>
+    `).openPopup();
+});
+
+document.addEventListener('click', (e) => {
+    if (e.target?.id === 'openSensoryBtn') {
+        document.getElementById('sensoryModal').style.display = 'block';
+    }
+    if (e.target?.classList.contains('popup-route-btn')) {
+        const lat = parseFloat(e.target.getAttribute('data-lat'));
+        const lng = parseFloat(e.target.getAttribute('data-lng'));
+        const type = e.target.getAttribute('data-type');
+        setRoutePoint(L.latLng(lat, lng), type);
+    }
+});
+
+document.getElementById('sensoryForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!clickedLocation) return;
+    const reportData = {
+        id: Date.now(),
+        light: this.light.value,
+        noise: this.noise.value,
+        odor: this.odor.value,
+        crowd: this.crowd.value,
+        wheelchair: this.wheelchair.checked,
+        location: { lat: clickedLocation.lat, lng: clickedLocation.lng },
+        timestamp: new Date().toISOString(),
+    };
+    const gridIndices = latLngToGridCell(clickedLocation);
+    updateGridData(gridIndices, reportData);
+    if (tempMarker) map.removeLayer(tempMarker);
+    if (tempGridHighlighter) map.removeLayer(tempGridHighlighter);
+    tempMarker = null;
+    this.reset();
+    document.getElementById('sensoryModal').style.display = 'none';
+    clickedLocation = null;
+    showToast("✔️ Sensory data saved to grid!");
+    if (document.getElementById('showRegisteredToggle').checked) {
+        renderGridVisuals();
+    }
+});
+
+document.getElementById('showRegisteredToggle').addEventListener('change', function () {
+    if (this.checked) {
+        renderGridVisuals();
+    } else {
+        clearGridVisuals();
+    }
+});
+
+document.getElementById('profileForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    const profileData = {
+        lightThreshold: this.lightThreshold.value,
+        noiseThreshold: this.noiseThreshold.value,
+        odorThreshold: this.odorThreshold.value,
+        crowdThreshold: this.crowdThreshold.value
+    };
+    localStorage.setItem('sensoryProfile', JSON.stringify(profileData));
     document.getElementById('profileModal').style.display = 'none';
-    resetRoutePlanning();
-    isPlanningRoute = true;
-    showToast('Click on the map to set your START point.');
+    showToast("✔️ Preferences saved!");
 });
 
-// --- 5. UI INITIALIZATION & HELPERS ---
-
-// Open/Close Modals
-document.getElementById('profileIcon')?.addEventListener('click', () => {
-  document.getElementById('profileModal').style.display = 'block';
-});
-document.getElementById('closeProfileModal')?.addEventListener('click', () => {
-  document.getElementById('profileModal').style.display = 'none';
-});
-document.getElementById('closeSensoryModal')?.addEventListener('click', () => {
-  document.getElementById('sensoryModal').style.display = 'none';
-});
-
-// On page load
-window.addEventListener('load', function() {
-  const savedProfile = JSON.parse(localStorage.getItem('sensoryProfile') || '{}');
-  const profileForm = document.getElementById('profileForm');
-  if (profileForm && Object.keys(savedProfile).length > 0) {
-    for (const [key, value] of Object.entries(savedProfile)) {
-      if(profileForm[key]) profileForm[key].value = value;
+document.getElementById('findRouteBtn').addEventListener('click', function () {
+    if (currentRouteLayer || startPoint || endPoint) {
+        resetRoutePlanning();
+    } else {
+        isPlanningRoute = true;
+        document.getElementById('profileModal').style.display = 'none';
+        showToast('Click on the map to set START point.');
     }
-  }
+});
 
-  document.querySelectorAll('input[type="range"]').forEach(slider => {
-    const valueSpan = slider.closest('label').querySelector('span');
-    if (valueSpan) {
-      valueSpan.textContent = slider.value;
-      slider.addEventListener('input', () => {
-        valueSpan.textContent = slider.value;
-      });
+document.getElementById('profileIcon').addEventListener('click', () => {
+    document.getElementById('profileModal').style.display = 'block';
+});
+
+document.getElementById('closeProfileModal').addEventListener('click', () => {
+    document.getElementById('profileModal').style.display = 'none';
+});
+
+document.getElementById('closeSensoryModal').addEventListener('click', () => {
+    document.getElementById('sensoryModal').style.display = 'none';
+});
+
+// --- 6. UI INITIALIZATION & HELPERS ---
+
+function showToast(msg, isError = false) {
+    const toast = document.getElementById("toast");
+    toast.textContent = isError ? `❌ ${msg}` : msg;
+    toast.style.backgroundColor = isError ? '#c73e3e' : '#323232';
+    toast.className = "show";
+    setTimeout(() => toast.className = toast.className.replace("show", ""), 3000);
+}
+
+window.addEventListener('load', function () {
+    const savedGridData = localStorage.getItem('gridData');
+    if (savedGridData) {
+        try {
+            const parsedData = JSON.parse(savedGridData);
+            if (Array.isArray(parsedData)) {
+                gridData = new Map(parsedData);
+                console.log('Grid data loaded from localStorage.', gridData.size);
+                if (document.getElementById('showRegisteredToggle').checked) {
+                    renderGridVisuals();
+                }
+            }
+        } catch (e) {
+            console.error("Error parsing gridData from localStorage", e);
+        }
     }
-  });
+    const savedProfile = JSON.parse(localStorage.getItem('sensoryProfile') || '{}');
+    const profileForm = document.getElementById('profileForm');
+    if (profileForm && Object.keys(savedProfile).length > 0) {
+        for (const [key, value] of Object.entries(savedProfile)) {
+            if (profileForm[key]) {
+                profileForm[key].value = value;
+                profileForm[key].dispatchEvent(new Event('input'));
+            }
+        }
+    }
+    document.querySelectorAll('input[type="range"]').forEach(slider => {
+        let span = slider.previousElementSibling?.querySelector('span');
+        if (!span) {
+            span = document.createElement('span');
+            slider.previousElementSibling.appendChild(span);
+        }
+        const updateSliderValue = () => span.textContent = `(${slider.value})`;
+        updateSliderValue();
+        slider.addEventListener('input', updateSliderValue);
+    });
 });
