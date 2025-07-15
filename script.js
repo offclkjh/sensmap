@@ -13,6 +13,20 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap contributors'
 }).addTo(map);
 
+const provider = new GeoSearch.OpenStreetMapProvider();
+const searchControl = new GeoSearch.GeoSearchControl({
+  provider: provider,
+  style: 'bar',
+  showMarker: true,
+  marker: {
+    icon: new L.Icon.Default(),
+    draggable: false,
+  },
+  autoClose: true,
+  keepResult: true
+});
+map.addControl(searchControl);
+
 const GRID_CELL_SIZE = 10;
 let gridData = new Map();
 let clickedLocation = null;
@@ -109,9 +123,8 @@ function clearGridVisuals() {
 
 async function fetchWalkRoute(startCoords, endCoords) {
     const apiKey = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjljN2FhNDU2NjRlZTQ3YzlhODg5YTM4Yjg4YmYyOWVmIiwiaCI6Im11cm11cjY0In0=";
+    // 'alternatives' 파라미터를 제거하여 단일 경로만 요청
     const baseUrl = "https://api.openrouteservice.org/v2/directions/foot-walking/geojson";
-    const alternatives = 'alternative_routes={"target_count":3,"weight_factor":1.4,"share_factor":0.6}';
-    const url = `${baseUrl}?${alternatives}`;
     const body = {
         coordinates: [
             [startCoords.lng, startCoords.lat],
@@ -119,7 +132,7 @@ async function fetchWalkRoute(startCoords, endCoords) {
         ]
     };
     try {
-        const response = await fetch(url, {
+        const response = await fetch(baseUrl, { // URL에서 alternatives 쿼리 제거
             method: "POST",
             headers: {
                 "Authorization": apiKey, "Content-Type": "application/json; charset=utf-8",
@@ -139,37 +152,12 @@ async function fetchWalkRoute(startCoords, endCoords) {
     }
 }
 
+// calculateRouteSensoryCost 함수는 이제 사용되지 않으므로 삭제하거나 주석 처리합니다.
+/*
 function calculateRouteSensoryCost(routeFeature) {
-    let totalCost = 0;
-    const profile = JSON.parse(localStorage.getItem('sensoryProfile') || '{}');
-    const sensitivities = {
-        noise: (Number(profile.noiseThreshold) || 0) / 10,
-        light: (Number(profile.lightThreshold) || 0) / 10,
-        odor: (Number(profile.odorThreshold) || 0) / 10,
-        crowd: (Number(profile.crowdThreshold) || 0) / 10,
-    };
-    if (Object.values(sensitivities).every(s => s === 0)) return 0;
-    const coordinates = routeFeature.geometry.coordinates;
-    const uniqueGridCells = new Set();
-    for (const coord of coordinates) {
-        const latlng = L.latLng(coord[1], coord[0]);
-        const gridIndices = latLngToGridCell(latlng);
-        const gridKey = `${gridIndices.x},${gridIndices.y}`;
-        if (!uniqueGridCells.has(gridKey)) {
-            uniqueGridCells.add(gridKey);
-            if (gridData.has(gridKey)) {
-                const cellData = gridData.get(gridKey);
-                let cellCost = 0;
-                cellCost += (cellData.avgNoise / 10) * sensitivities.noise;
-                cellCost += (cellData.avgLight / 10) * sensitivities.light;
-                cellCost += (cellData.avgOdor / 10) * sensitivities.odor;
-                cellCost += (cellData.avgCrowd / 10) * sensitivities.crowd;
-                totalCost += cellCost;
-            }
-        }
-    }
-    return totalCost;
+    // ... (내용 생략)
 }
+*/
 
 async function calculateAndDrawRoute() {
     if (!startPoint || !endPoint) {
@@ -184,121 +172,34 @@ async function calculateAndDrawRoute() {
     try {
         const geojson = await fetchWalkRoute(startPoint, endPoint);
         
-        // Log GeoJSON for debugging
-        console.log("GeoJSON Response:", JSON.stringify(geojson, null, 2));
-        
-        // Check if the GeoJSON response is valid and contains features
         if (!geojson || !geojson.features || !geojson.features.length) {
-            showToast("No routes found in API response.", true);
-            console.error("Invalid GeoJSON response:", geojson);
+            showToast("No route found.", true);
+            console.error("No features in GeoJSON response:", geojson);
             return;
         }
 
-        // Validate GeoJSON features for LineString and sufficient coordinates
-        const routesWithCost = geojson.features
-            .filter(feature => 
-                feature.geometry && 
-                feature.geometry.type === 'LineString' && 
-                feature.geometry.coordinates && 
-                feature.geometry.coordinates.length >= 2 &&
-                feature.geometry.coordinates.every(coord => Array.isArray(coord) && coord.length === 2 && typeof coord[0] === 'number' && typeof coord[1] === 'number')
-            )
-            .map(route => {
-                const sensoryCost = calculateRouteSensoryCost(route);
-                const distance = route.properties?.summary?.distance || 0;
-                const duration = route.properties?.summary?.duration || 0;
-                const combinedCost = sensoryCost * 2000 + distance;
-                return { feature: route, sensoryCost, combinedCost, distance, duration };
-            });
-
-        // Check if any valid routes were found
-        if (routesWithCost.length === 0) {
-            showToast("No valid routes with proper coordinates found.", true);
-            console.error("No valid routes in GeoJSON:", geojson);
-            return;
-        }
-
-        // Sort routes by combined cost
-        routesWithCost.sort((a, b) => a.combinedCost - b.combinedCost);
-        const bestRoute = routesWithCost[0];
+        // API 응답의 첫 번째 경로를 기본 경로로 사용
+        const route = geojson.features[0];
         
-        // Find the shortest route by distance
-        const shortestRoute = geojson.features.find(r => 
-            r.properties?.summary?.distance === Math.min(...geojson.features.map(f => f.properties?.summary?.distance || Infinity))
-        ) || geojson.features[0];
+        const distance = route.properties?.summary?.distance || 0;
+        const duration = route.properties?.summary?.duration || 0;
 
-        console.log("Routes Analyzed:", routesWithCost);
-
-        const drawableLayers = [];
-
-        // Create best route layer
-        const bestRouteLayer = L.geoJSON(bestRoute.feature, {
+        // 경로를 파란색 실선으로 표시
+        const routeLayer = L.geoJSON(route, {
             style: { color: '#007BFF', weight: 6, opacity: 0.9 }
         });
-        try {
-            const bounds = bestRouteLayer.getBounds();
-            if (bounds.isValid()) {
-                bestRouteLayer.bindPopup(
-                    `<b>Comfortable Route</b><br>Distance: ${(bestRoute.distance / 1000).toFixed(2)} km<br>Sensory Score: ${bestRoute.sensoryCost.toFixed(2)}`
-                );
-                drawableLayers.push(bestRouteLayer);
-            } else {
-                console.warn("Best route layer has invalid bounds:", bestRoute.feature);
-            }
-        } catch (e) {
-            console.error("Could not process 'best route' layer:", e, bestRoute.feature);
-        }
 
-        // Create shortest route layer if different from best route
-        if (bestRoute.feature !== shortestRoute && shortestRoute) {
-            const shortestRouteLayer = L.geoJSON(shortestRoute, {
-                style: { color: 'gray', weight: 5, opacity: 0.6, dashArray: '5, 10' }
-            });
-            try {
-                const bounds = shortestRouteLayer.getBounds();
-                if (bounds.isValid()) {
-                    const shortestDistance = shortestRoute.properties?.summary?.distance || 0;
-                    shortestRouteLayer.bindPopup(
-                        `<b>Shortest Route</b><br>Distance: ${(shortestDistance / 1000).toFixed(2)} km`
-                    );
-                    drawableLayers.push(shortestRouteLayer);
-                } else {
-                    console.warn("Shortest route layer has invalid bounds:", shortestRoute);
-                }
-            } catch (e) {
-                console.error("Could not process 'shortest route' layer:", e, shortestRoute);
-            }
-        }
+        // 팝업에 거리와 예상 시간 정보 표시
+        routeLayer.bindPopup(
+            `<b>Route</b><br>Distance: ${(distance / 1000).toFixed(2)} km<br>Duration: ${Math.round(duration / 60)} min`
+        );
 
-        // Draw routes if valid layers exist
-        if (drawableLayers.length > 0) {
-            currentRouteLayer = L.layerGroup(drawableLayers).addTo(map);
-            try {
-                const groupBounds = currentRouteLayer.getBounds();
-                if (groupBounds.isValid()) {
-                    map.fitBounds(groupBounds);
-                    if (bestRoute.feature !== shortestRoute) {
-                        showToast("✨ A more comfortable route was found!");
-                    } else {
-                        showToast("✔️ The shortest route is the most comfortable!");
-                    }
-                } else {
-                    // Fallback to zooming to start and end points
-                    const fallbackBounds = L.latLngBounds([startPoint, endPoint]);
-                    map.fitBounds(fallbackBounds);
-                    showToast("Route drawn, but zoomed to start/end points due to invalid bounds.", true);
-                    console.warn("Invalid bounds for layer group, using fallback:", drawableLayers);
-                }
-            } catch (e) {
-                // Fallback to zooming to start and end points
-                const fallbackBounds = L.latLngBounds([startPoint, endPoint]);
-                map.fitBounds(fallbackBounds);
-                showToast("Route drawn, but zoomed to start/end points due to bounds error.", true);
-                console.error("Error accessing layer group bounds:", e, drawableLayers);
-            }
-        } else {
-            showToast("No valid routes could be drawn.", true);
-            console.error("No drawable layers created:", routesWithCost);
+        currentRouteLayer = L.layerGroup([routeLayer]).addTo(map);
+        
+        // 지도 범위를 경로에 맞게 조정
+        if (routeLayer.getBounds().isValid()) {
+            map.fitBounds(routeLayer.getBounds());
+            showToast("✔️ Route found!");
         }
 
         document.getElementById('findRouteBtn').textContent = 'Clear Route';
@@ -308,6 +209,7 @@ async function calculateAndDrawRoute() {
         console.error("Error in calculateAndDrawRoute:", err);
     }
 }
+
 
 function resetRoutePlanning() {
     if (currentRouteLayer) map.removeLayer(currentRouteLayer);
@@ -359,6 +261,7 @@ function handleManualRoutePlanning(latlng) {
 
 // --- 5. EVENT LISTENERS ---
 
+// 지도 클릭 이벤트
 map.on('click', function (e) {
     if (isPlanningRoute) {
         handleManualRoutePlanning(e.latlng);
@@ -366,7 +269,6 @@ map.on('click', function (e) {
     }
     if (tempGridHighlighter) map.removeLayer(tempGridHighlighter);
     const gridIndices = latLngToGridCell(e.latlng);
-    console.log("Clicked Grid Cell:", gridIndices);
     const gridBounds = gridCellToLatLngBounds(gridIndices);
     tempGridHighlighter = L.rectangle(gridBounds, { color: "#ff7800", weight: 1, fillOpacity: 0.3 }).addTo(map);
     if (tempMarker) map.removeLayer(tempMarker);
@@ -384,6 +286,7 @@ map.on('click', function (e) {
     `).openPopup();
 });
 
+// 팝업 내 버튼 클릭 이벤트
 document.addEventListener('click', (e) => {
     if (e.target?.id === 'openSensoryBtn') {
         document.getElementById('sensoryModal').style.display = 'block';
@@ -396,6 +299,7 @@ document.addEventListener('click', (e) => {
     }
 });
 
+// 감각 정보 저장 폼
 document.getElementById('sensoryForm').addEventListener('submit', function (e) {
     e.preventDefault();
     if (!clickedLocation) return;
@@ -423,14 +327,7 @@ document.getElementById('sensoryForm').addEventListener('submit', function (e) {
     }
 });
 
-document.getElementById('showRegisteredToggle').addEventListener('change', function () {
-    if (this.checked) {
-        renderGridVisuals();
-    } else {
-        clearGridVisuals();
-    }
-});
-
+// 프로필 저장 폼
 document.getElementById('profileForm').addEventListener('submit', function (e) {
     e.preventDefault();
     const profileData = {
@@ -444,6 +341,7 @@ document.getElementById('profileForm').addEventListener('submit', function (e) {
     showToast("✔️ Preferences saved!");
 });
 
+// 길찾기 버튼
 document.getElementById('findRouteBtn').addEventListener('click', function () {
     if (currentRouteLayer || startPoint || endPoint) {
         resetRoutePlanning();
@@ -454,17 +352,51 @@ document.getElementById('findRouteBtn').addEventListener('click', function () {
     }
 });
 
-document.getElementById('profileIcon').addEventListener('click', () => {
-    document.getElementById('profileModal').style.display = 'block';
-});
-
+// 모달 닫기 버튼
 document.getElementById('closeProfileModal').addEventListener('click', () => {
     document.getElementById('profileModal').style.display = 'none';
 });
-
 document.getElementById('closeSensoryModal').addEventListener('click', () => {
     document.getElementById('sensoryModal').style.display = 'none';
 });
+
+// === 토글 스위치 이벤트 리스너 ===
+document.getElementById('showRegisteredToggle').addEventListener('change', function () {
+    if (this.checked) {
+        renderGridVisuals();
+    } else {
+        clearGridVisuals();
+    }
+});
+
+// === 사이드 메뉴 관련 이벤트 리스너 ===
+const sideMenu = document.getElementById('side-menu');
+const overlay = document.getElementById('overlay');
+
+function openMenu() {
+    sideMenu.style.width = '250px';
+    overlay.style.display = 'block';
+}
+function closeMenu() {
+    sideMenu.style.width = '0';
+    overlay.style.display = 'none';
+}
+
+document.getElementById('hamburger-menu').addEventListener('click', openMenu);
+document.getElementById('close-menu').addEventListener('click', closeMenu);
+overlay.addEventListener('click', closeMenu);
+
+document.getElementById('menu-profile').addEventListener('click', (e) => {
+    e.preventDefault();
+    document.getElementById('profileModal').style.display = 'block';
+    closeMenu();
+});
+
+// 기타 메뉴 항목 (준비 중 알림)
+document.getElementById('menu-filter').addEventListener('click', (e) => { e.preventDefault(); alert('감각 필터 기능은 고민중.'); });
+document.getElementById('menu-settings').addEventListener('click', (e) => { e.preventDefault(); alert('설정 기능 준비 중입니다.'); });
+document.getElementById('menu-help').addEventListener('click', (e) => { e.preventDefault(); alert('도움말 기능 준비 중입니다.'); });
+document.getElementById('menu-contact').addEventListener('click', (e) => { e.preventDefault(); alert('문의 기능 준비 중입니다.'); });
 
 // --- 6. UI INITIALIZATION & HELPERS ---
 
@@ -477,13 +409,26 @@ function showToast(msg, isError = false) {
 }
 
 window.addEventListener('load', function () {
+    // 현재 위치 가져오기
+    if ('geolocation' in navigator) {
+        navigator.geolocation.getCurrentPosition(position => {
+            const lat = position.coords.latitude;
+            const lng = position.coords.longitude;
+            map.setView([lat, lng], 16);
+            L.marker([lat, lng]).addTo(map).bindPopup('현재 위치').openPopup();
+        }, () => {
+            showToast("위치 정보를 가져올 수 없습니다.", true);
+        });
+    }
+
+    // 저장된 데이터 로드
     const savedGridData = localStorage.getItem('gridData');
     if (savedGridData) {
         try {
             const parsedData = JSON.parse(savedGridData);
             if (Array.isArray(parsedData)) {
                 gridData = new Map(parsedData);
-                console.log('Grid data loaded from localStorage.', gridData.size);
+                // 토글이 켜져있으면 데이터 표시
                 if (document.getElementById('showRegisteredToggle').checked) {
                     renderGridVisuals();
                 }
@@ -502,6 +447,8 @@ window.addEventListener('load', function () {
             }
         }
     }
+    
+    // 슬라이더 값 표시
     document.querySelectorAll('input[type="range"]').forEach(slider => {
         let span = slider.previousElementSibling?.querySelector('span');
         if (!span) {
