@@ -3,13 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Ogam Sensory Map</title>
+  <title>Sensory Map</title>
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.css" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.Default.css" />
 </head>
 <body>
   <div id="map"></div>
@@ -23,7 +21,7 @@
       <input type="checkbox" id="showRegisteredToggle">
       <span class="slider"></span>
     </label>
-    <span id="toggleLabel">Show Registered Info</span>
+    <span id="toggleLabel">Show Sensory Data</span>
   </div>
 
   <div class="modal" id="sensoryModal">
@@ -31,12 +29,15 @@
       <span class="close" id="closeSensoryModal">&times;</span>
       <h2>Register Sensory Info</h2>
       <form id="sensoryForm">
-        <label>Light Intensity: <span>5</span><input type="range" min="0" max="10" value="5" name="light" /></label>
-        <label>Noise Level: <span>5</span><input type="range" min="0" max="10" value="5" name="noise" /></label>
-        <label>Odor Presence: <span>5</span><input type="range" min="0" max="10" value="5" name="odor" /></label>
-        <label>Crowd Density: <span>5</span><input type="range" min="0" max="10" value="5" name="crowd" /></label>
-        <label><input type="checkbox" name="wheelchair" /> Wheelchair Accessible</label>
-        <label>Memo (optional):<input type="text" name="memo" placeholder="e.g., Truck noise, strong perfume" /></label>
+        <label>Light Intensity: <span id="lightValue"></span></label>
+        <input type="range" min="0" max="10" value="5" name="light" />
+        <label>Noise Level: <span id="noiseValue"></span></label>
+        <input type="range" min="0" max="10" value="5" name="noise" />
+        <label>Odor Presence: <span id="odorValue"></span></label>
+        <input type="range" min="0" max="10" value="5" name="odor" />
+        <label>Crowd Density: <span id="crowdValue"></span></label>
+        <input type="range" min="0" max="10" value="5" name="crowd" />
+        <label><input type="checkbox" name="wheelchair" /> Wheelchair Inaccessible</label>
         <button type="submit">Save</button>
       </form>
     </div>
@@ -45,13 +46,16 @@
   <div class="modal" id="profileModal">
     <div class="modal-content">
       <span class="close" id="closeProfileModal">&times;</span>
-      <h2>My Sensory Profile</h2>
-      <p style="font-size: 12px; color: #555;">Set thresholds. Locations exceeding these will be highlighted.</p>
+      <h2>Sensory Profile Settings</h2>
       <form id="profileForm">
-        <label>Light Sensitivity: <span>5</span><input type="range" min="0" max="10" value="5" name="lightThreshold" /></label>
-        <label>Noise Sensitivity: <span>5</span><input type="range" min="0" max="10" value="5" name="noiseThreshold" /></label>
-        <label>Odor Sensitivity: <span>5</span><input type="range" min="0" max="10" value="5" name="odorThreshold" /></label>
-        <label>Crowd Sensitivity: <span>5</span><input type="range" min="0" max="10" value="5" name="crowdThreshold" /></label>
+        <label>Light Sensitivity: <span id="lightThresholdValue"></span></label>
+        <input type="range" min="0" max="10" value="5" name="lightThreshold" />
+        <label>Noise Sensitivity: <span id="noiseThresholdValue"></span></label>
+        <input type="range" min="0" max="10" value="5" name="noiseThreshold" />
+        <label>Odor Sensitivity: <span id="odorThresholdValue"></span></label>
+        <input type="range" min="0" max="10" value="5" name="odorThreshold" />
+        <label>Crowd Sensitivity: <span id="crowdThresholdValue"></span></label>
+        <input type="range" min="0" max="10" value="5" name="crowdThreshold" />
         <button type="submit">Save Preferences</button>
         <button type="button" id="findRouteBtn" title="Find shortest path">Find My Route</button>
       </form>
@@ -62,7 +66,6 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.min.js"></script>
-  <script src="https://unpkg.com/leaflet.markercluster@1.4.1/dist/leaflet.markercluster.js"></script>
   <script src="script.js"></script>
 </body>
 </html>
