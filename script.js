@@ -1,462 +1,569 @@
-// =================================================================
-// 참고
-// 데이터 저장을 위해 localStorage를 사용
-// 실제 다중 사용자 환경의 애플리케이션에서는 반드시 Firebase, Supabase,
-// 또는 PostgreSQL/MongoDB와 같은 백엔드 서버와 데이터베이스를 이용해
-// 적절히 대체해야 함.
-// =================================================================
-
-// --- 1. GLOBAL VARIABLES & MAP INITIALIZATION ---
-
-const map = L.map('map').setView([37.5665, 126.9780], 13);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '© OpenStreetMap contributors'
-}).addTo(map);
-
-const provider = new GeoSearch.OpenStreetMapProvider();
-const searchControl = new GeoSearch.GeoSearchControl({
-  provider: provider,
-  style: 'bar',
-  showMarker: true,
-  marker: {
-    icon: new L.Icon.Default(),
-    draggable: false,
-  },
-  autoClose: true,
-  keepResult: true
-});
-map.addControl(searchControl);
-
-const GRID_CELL_SIZE = 10;
-let gridData = new Map();
-let clickedLocation = null;
-let tempMarker = null;
-let gridVisualLayers = [];
-let startPoint = null;
-let endPoint = null;
-let startMarker = null;
-let endMarker = null;
-let currentRouteLayer = null;
-let isPlanningRoute = false;
-let tempGridHighlighter = null;
-
-// --- 2. GRID SYSTEM FUNCTIONS ---
-
-function latLngToGridCell(latlng) {
-    const projected = L.CRS.EPSG3857.project(latlng);
-    const x = Math.floor(projected.x / GRID_CELL_SIZE);
-    const y = Math.floor(projected.y / GRID_CELL_SIZE);
-    return { x, y };
-}
-
-function gridCellToLatLngBounds(gridIndices) {
-    const bottomLeftX = gridIndices.x * GRID_CELL_SIZE;
-    const bottomLeftY = gridIndices.y * GRID_CELL_SIZE;
-    const topRightX = (gridIndices.x + 1) * GRID_CELL_SIZE;
-    const topRightY = (gridIndices.y + 1) * GRID_CELL_SIZE;
-    const bottomLeftPoint = L.point(bottomLeftX, bottomLeftY);
-    const topRightPoint = L.point(topRightX, topRightY);
-    const bottomLeftLatLng = L.CRS.EPSG3857.unproject(bottomLeftPoint);
-    const topRightLatLng = L.CRS.EPSG3857.unproject(topRightPoint);
-    return L.latLngBounds(bottomLeftLatLng, topRightLatLng);
-}
-
-function updateGridData(gridIndices, reportData) {
-    const gridKey = `${gridIndices.x},${gridIndices.y}`;
-    if (!gridData.has(gridKey)) {
-        gridData.set(gridKey, {
-            avgNoise: 0, avgLight: 0, avgOdor: 0, avgCrowd: 0,
-            reportCount: 0, reports: []
-        });
-    }
-    const cellData = gridData.get(gridKey);
-    cellData.reports.push(reportData);
-    const N = cellData.reports.length;
-    cellData.avgNoise = (cellData.avgNoise * (N - 1) + Number(reportData.noise)) / N;
-    cellData.avgLight = (cellData.avgLight * (N - 1) + Number(reportData.light)) / N;
-    cellData.avgOdor = (cellData.avgOdor * (N - 1) + Number(reportData.odor)) / N;
-    cellData.avgCrowd = (cellData.avgCrowd * (N - 1) + Number(reportData.crowd)) / N;
-    cellData.reportCount = N;
-    localStorage.setItem('gridData', JSON.stringify(Array.from(gridData.entries())));
-    console.log(`Grid cell ${gridKey} updated.`, cellData);
-}
-
-// --- 3. VISUALIZATION FUNCTIONS ---
-
-function renderGridVisuals() {
-    clearGridVisuals();
-    gridData.forEach((cellData, gridKey) => {
-        const totalAvg = (cellData.avgNoise + cellData.avgLight + cellData.avgOdor + cellData.avgCrowd) / 4;
-        if (totalAvg === 0) return;
-        let color = 'rgba(0, 128, 0, 0.4)';
-        if (totalAvg >= 7) color = 'rgba(255, 0, 0, 0.6)';
-        else if (totalAvg >= 4) color = 'rgba(255, 165, 0, 0.5)';
-        const indices = gridKey.split(',');
-        const gridIndices = { x: Number(indices[0]), y: Number(indices[1]) };
-        const bounds = gridCellToLatLngBounds(gridIndices);
-        const center = bounds.getCenter();
-        const circle = L.circle(center, {
-            color: color, fillColor: color,
-            fillOpacity: parseFloat(color.split(',')[3]),
-            radius: GRID_CELL_SIZE * 1.5,
-            interactive: true
-        }).addTo(map);
-        circle.bindPopup(`
-            <div style="font-weight:bold; margin-bottom:5px;">Avg. Sensory Info</div>
-            Noise: <b>${cellData.avgNoise.toFixed(1)}</b><br>
-            Light: <b>${cellData.avgLight.toFixed(1)}</b><br>
-            Odor: <b>${cellData.avgOdor.toFixed(1)}</b><br>
-            Crowd: <b>${cellData.avgCrowd.toFixed(1)}</b><br>
-            <hr style="margin:5px 0;">
-            Total Reports: <b>${cellData.reportCount}</b>
-        `);
-        gridVisualLayers.push(circle);
-    });
-}
-
-function clearGridVisuals() {
-    gridVisualLayers.forEach(layer => map.removeLayer(layer));
-    gridVisualLayers = [];
-}
-
-// --- 4. ROUTE PLANNING FUNCTIONS ---
-
-async function fetchWalkRoute(startCoords, endCoords) {
-    const apiKey = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjljN2FhNDU2NjRlZTQ3YzlhODg5YTM4Yjg4YmYyOWVmIiwiaCI6Im11cm11cjY0In0=";
-    // 'alternatives' 파라미터를 제거하여 단일 경로만 요청
-    const baseUrl = "https://api.openrouteservice.org/v2/directions/foot-walking/geojson";
-    const body = {
-        coordinates: [
-            [startCoords.lng, startCoords.lat],
-            [endCoords.lng, endCoords.lat]
-        ]
-    };
-    try {
-        const response = await fetch(baseUrl, { // URL에서 alternatives 쿼리 제거
-            method: "POST",
-            headers: {
-                "Authorization": apiKey, "Content-Type": "application/json; charset=utf-8",
-                "Accept": "application/json, application/geo+json, application/gpx+xml, img/png; charset=utf-8"
-            },
-            body: JSON.stringify(body)
-        });
-        if (!response.ok) {
-            const errorData = await response.json();
-            console.error("ORS API Error:", errorData);
-            throw new Error(`API Error: ${errorData.error?.message || response.status}`);
-        }
-        return await response.json();
-    } catch (err) {
-        console.error("Error in fetchWalkRoute:", err);
-        throw err;
-    }
-}
-
-// calculateRouteSensoryCost 함수는 이제 사용되지 않으므로 삭제하거나 주석 처리합니다.
-/*
-function calculateRouteSensoryCost(routeFeature) {
-    // ... (내용 생략)
-}
-*/
-
-async function calculateAndDrawRoute() {
-    if (!startPoint || !endPoint) {
-        showToast("Please set both start and end points.");
-        return;
-    }
-    if (currentRouteLayer) {
-        map.removeLayer(currentRouteLayer);
-        currentRouteLayer = null;
-    }
-
-    try {
-        const geojson = await fetchWalkRoute(startPoint, endPoint);
+// Enhanced Sensmap Application with Watercolor UI
+class SensmapApp {
+    constructor() {
+        this.map = L.map('map', { zoomControl: false }).setView([37.5665, 126.9780], 14);
+        this.gridData = new Map();
+        this.GRID_CELL_SIZE = 15; // meters
+        this.currentMode = 'comfort';
+        this.showData = true;
+        this.isRouteMode = false;
+        this.routePoints = { start: null, end: null };
+        this.routeMarkers = { start: null, end: null };
+        this.currentRoute = null;
+        this.clickedLocation = null;
+        this.sensoryLayers = L.layerGroup().addTo(this.map);
         
-        if (!geojson || !geojson.features || !geojson.features.length) {
-            showToast("No route found.", true);
-            console.error("No features in GeoJSON response:", geojson);
+        this.initializeMap();
+        this.setupEventListeners();
+        this.loadSavedData();
+        this.setupGeolocation();
+    }
+
+    initializeMap() {
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png', {
+            attribution: '© OpenStreetMap, © CARTO',
+            maxZoom: 19
+        }).addTo(this.map);
+
+        L.control.zoom({ position: 'bottomright' }).addTo(this.map);
+
+        const provider = new GeoSearch.OpenStreetMapProvider();
+        const searchControl = new GeoSearch.GeoSearchControl({
+            provider, style: 'bar',
+            showMarker: false, autoClose: true,
+            searchLabel: '장소 검색...',
+        });
+        this.map.addControl(searchControl);
+    }
+
+    setupEventListeners() {
+        // Header
+        document.querySelectorAll('.mode-btn').forEach(btn => {
+            btn.addEventListener('click', () => this.setVisualizationMode(btn.dataset.mode));
+        });
+        document.getElementById('intensitySlider').addEventListener('input', (e) => {
+            document.getElementById('intensityValue').textContent = e.target.value;
+            this.refreshVisualization();
+        });
+        document.getElementById('showDataBtn').addEventListener('click', () => this.toggleDataDisplay());
+        document.getElementById('profileBtn').addEventListener('click', () => this.openProfilePanel());
+        document.getElementById('routeBtn').addEventListener('click', () => this.toggleRouteMode());
+
+        // Panels
+        document.getElementById('cancelBtn').addEventListener('click', () => this.closeInputPanel());
+        document.getElementById('cancelProfileBtn').addEventListener('click', () => this.closeProfilePanel());
+        document.getElementById('overlay').addEventListener('click', () => {
+            this.closeInputPanel();
+            this.closeProfilePanel();
+        });
+        document.getElementById('addDataFab').addEventListener('click', () => {
+             this.showToast('지도를 클릭하여 정보를 추가할 위치를 선택하세요.');
+        });
+        
+        // Forms
+        document.getElementById('sensoryForm').addEventListener('submit', (e) => this.handleSensorySubmit(e));
+        document.getElementById('profileForm').addEventListener('submit', (e) => this.handleProfileSubmit(e));
+        document.getElementById('cancelRouteBtn').addEventListener('click', () => this.cancelRouteMode());
+
+        // Sliders & Type Selector
+        document.querySelectorAll('.range-slider').forEach(slider => {
+            slider.addEventListener('input', (e) => {
+                e.target.parentNode.querySelector('.range-value').textContent = e.target.value;
+            });
+        });
+        document.querySelectorAll('.type-option').forEach(option => {
+            option.addEventListener('click', () => {
+                document.querySelectorAll('.type-option').forEach(o => o.classList.remove('selected'));
+                option.classList.add('selected');
+            });
+        });
+
+        // Map click
+        this.map.on('click', (e) => this.handleMapClick(e));
+        setInterval(() => this.cleanupExpiredData(), 60000);
+    }
+
+    handleMapClick(e) {
+        if (this.isRouteMode) {
+            this.handleRouteClick(e.latlng);
             return;
         }
 
-        // API 응답의 첫 번째 경로를 기본 경로로 사용
-        const route = geojson.features[0];
+        this.clickedLocation = e.latlng;
+        const gridKey = this.getGridKey(e.latlng);
+        const cellData = this.gridData.get(gridKey);
         
-        const distance = route.properties?.summary?.distance || 0;
-        const duration = route.properties?.summary?.duration || 0;
-
-        // 경로를 파란색 실선으로 표시
-        const routeLayer = L.geoJSON(route, {
-            style: { color: '#007BFF', weight: 6, opacity: 0.9 }
-        });
-
-        // 팝업에 거리와 예상 시간 정보 표시
-        routeLayer.bindPopup(
-            `<b>Route</b><br>Distance: ${(distance / 1000).toFixed(2)} km<br>Duration: ${Math.round(duration / 60)} min`
-        );
-
-        currentRouteLayer = L.layerGroup([routeLayer]).addTo(map);
-        
-        // 지도 범위를 경로에 맞게 조정
-        if (routeLayer.getBounds().isValid()) {
-            map.fitBounds(routeLayer.getBounds());
-            showToast("✔️ Route found!");
+        // If user intended to add data, open panel directly
+        if (!document.getElementById('inputPanel').classList.contains('open')) {
+            this.openInputPanel();
+        } else {
+             this.showLocationPopup(e.latlng, gridKey, cellData);
         }
-
-        document.getElementById('findRouteBtn').textContent = 'Clear Route';
-
-    } catch (err) {
-        showToast(`Route Error: ${err.message}`, true);
-        console.error("Error in calculateAndDrawRoute:", err);
     }
-}
 
-
-function resetRoutePlanning() {
-    if (currentRouteLayer) map.removeLayer(currentRouteLayer);
-    if (startMarker) map.removeLayer(startMarker);
-    if (endMarker) map.removeLayer(endMarker);
-    
-    currentRouteLayer = null;
-    startPoint = null;
-    endPoint = null;
-    startMarker = null;
-    endMarker = null;
-    isPlanningRoute = false;
-    document.getElementById('findRouteBtn').textContent = 'Find My Route';
-    showToast('Route cleared.');
-}
-
-function setRoutePoint(latlng, type) {
-    const iconUrl = type === 'start'
-        ? 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png'
-        : 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png';
-    const markerOptions = { icon: L.icon({ iconUrl, iconSize: [25, 41], iconAnchor: [12, 41] }) };
-    if (type === 'start') {
-        if (startMarker) map.removeLayer(startMarker);
-        startPoint = latlng;
-        startMarker = L.marker(latlng, markerOptions).addTo(map);
-        showToast('Start point set!');
-    } else {
-        if (endMarker) map.removeLayer(endMarker);
-        endPoint = latlng;
-        endMarker = L.marker(latlng, markerOptions).addTo(map);
-        showToast('End point set!');
+    // --- Panel Management ---
+    openInputPanel() {
+        if (!this.clickedLocation) {
+            this.showToast('먼저 지도에서 위치를 선택해주세요!', 'info');
+            return;
+        }
+        this.closeProfilePanel();
+        document.getElementById('inputPanel').classList.add('open');
+        document.getElementById('overlay').classList.add('show');
+        document.getElementById('addDataFab').style.display = 'none';
     }
-    map.closePopup();
-    if (startPoint && endPoint) {
-        calculateAndDrawRoute();
+    closeInputPanel() {
+        document.getElementById('inputPanel').classList.remove('open');
+        document.getElementById('overlay').classList.remove('show');
+        document.getElementById('addDataFab').style.display = 'flex';
     }
-}
-
-function handleManualRoutePlanning(latlng) {
-    if (!startPoint) {
-        setRoutePoint(latlng, 'start');
-        showToast('Start point set. Click map for End point.');
-    } else if (!endPoint) {
-        setRoutePoint(latlng, 'end');
-        isPlanningRoute = false;
-        document.getElementById('findRouteBtn').textContent = 'Clear Route';
+    openProfilePanel() {
+        this.closeInputPanel();
+        document.getElementById('profilePanel').classList.add('open');
+        document.getElementById('overlay').classList.add('show');
     }
-}
-
-// --- 5. EVENT LISTENERS ---
-
-// 지도 클릭 이벤트
-map.on('click', function (e) {
-    if (isPlanningRoute) {
-        handleManualRoutePlanning(e.latlng);
-        return;
+    closeProfilePanel() {
+        document.getElementById('profilePanel').classList.remove('open');
+        document.getElementById('overlay').classList.remove('show');
     }
-    if (tempGridHighlighter) map.removeLayer(tempGridHighlighter);
-    const gridIndices = latLngToGridCell(e.latlng);
-    const gridBounds = gridCellToLatLngBounds(gridIndices);
-    tempGridHighlighter = L.rectangle(gridBounds, { color: "#ff7800", weight: 1, fillOpacity: 0.3 }).addTo(map);
-    if (tempMarker) map.removeLayer(tempMarker);
-    clickedLocation = e.latlng;
-    tempMarker = L.marker(e.latlng, { zIndexOffset: 1000 }).addTo(map);
-    tempMarker.bindPopup(`
-        <div style="padding: 10px; text-align:center; width:180px;">
-            <p style="margin-bottom: 10px;"><strong>What would you like to do?</strong></p>
-            <div class="route-btn-group" style="margin-bottom: 10px;">
-                <button class="popup-route-btn" data-type="start" data-lat="${e.latlng.lat}" data-lng="${e.latlng.lng}">Set as Start</button>
-                <button class="popup-route-btn" data-type="end" data-lat="${e.latlng.lat}" data-lng="${e.latlng.lng}">Set as End</button>
-            </div>
-            <button id="openSensoryBtn" style="width:100%; background-color:#6c757d; color:white; border:none; padding: 8px;">Register Sensory Info</button>
-        </div>
-    `).openPopup();
-});
 
-// 팝업 내 버튼 클릭 이벤트
-document.addEventListener('click', (e) => {
-    if (e.target?.id === 'openSensoryBtn') {
-        document.getElementById('sensoryModal').style.display = 'block';
-    }
-    if (e.target?.classList.contains('popup-route-btn')) {
-        const lat = parseFloat(e.target.getAttribute('data-lat'));
-        const lng = parseFloat(e.target.getAttribute('data-lng'));
-        const type = e.target.getAttribute('data-type');
-        setRoutePoint(L.latLng(lat, lng), type);
-    }
-});
+    // --- Data Handling & Submission ---
+    handleSensorySubmit(e) {
+        e.preventDefault();
+        if (!this.clickedLocation) return;
+        const formData = new FormData(e.target);
+        const selectedType = document.querySelector('.type-option.selected').dataset.type;
+        
+        const reportData = {
+            id: Date.now(), timestamp: Date.now(), type: selectedType,
+            noise: parseInt(formData.get('noise')), light: parseInt(formData.get('light')),
+            odor: parseInt(formData.get('odor')), crowd: parseInt(formData.get('crowd')),
+            wheelchair: formData.get('wheelchair') === 'on',
+            location: { lat: this.clickedLocation.lat, lng: this.clickedLocation.lng }
+        };
 
-// 감각 정보 저장 폼
-document.getElementById('sensoryForm').addEventListener('submit', function (e) {
-    e.preventDefault();
-    if (!clickedLocation) return;
-    const reportData = {
-        id: Date.now(),
-        light: this.light.value,
-        noise: this.noise.value,
-        odor: this.odor.value,
-        crowd: this.crowd.value,
-        wheelchair: this.wheelchair.checked,
-        location: { lat: clickedLocation.lat, lng: clickedLocation.lng },
-        timestamp: new Date().toISOString(),
-    };
-    const gridIndices = latLngToGridCell(clickedLocation);
-    updateGridData(gridIndices, reportData);
-    if (tempMarker) map.removeLayer(tempMarker);
-    if (tempGridHighlighter) map.removeLayer(tempGridHighlighter);
-    tempMarker = null;
-    this.reset();
-    document.getElementById('sensoryModal').style.display = 'none';
-    clickedLocation = null;
-    showToast("✔️ Sensory data saved to grid!");
-    if (document.getElementById('showRegisteredToggle').checked) {
-        renderGridVisuals();
-    }
-});
-
-// 프로필 저장 폼
-document.getElementById('profileForm').addEventListener('submit', function (e) {
-    e.preventDefault();
-    const profileData = {
-        lightThreshold: this.lightThreshold.value,
-        noiseThreshold: this.noiseThreshold.value,
-        odorThreshold: this.odorThreshold.value,
-        crowdThreshold: this.crowdThreshold.value
-    };
-    localStorage.setItem('sensoryProfile', JSON.stringify(profileData));
-    document.getElementById('profileModal').style.display = 'none';
-    showToast("✔️ Preferences saved!");
-});
-
-// 길찾기 버튼
-document.getElementById('findRouteBtn').addEventListener('click', function () {
-    if (currentRouteLayer || startPoint || endPoint) {
-        resetRoutePlanning();
-    } else {
-        isPlanningRoute = true;
-        document.getElementById('profileModal').style.display = 'none';
-        showToast('Click on the map to set START point.');
-    }
-});
-
-// 모달 닫기 버튼
-document.getElementById('closeProfileModal').addEventListener('click', () => {
-    document.getElementById('profileModal').style.display = 'none';
-});
-document.getElementById('closeSensoryModal').addEventListener('click', () => {
-    document.getElementById('sensoryModal').style.display = 'none';
-});
-
-// === 토글 스위치 이벤트 리스너 ===
-document.getElementById('showRegisteredToggle').addEventListener('change', function () {
-    if (this.checked) {
-        renderGridVisuals();
-    } else {
-        clearGridVisuals();
-    }
-});
-
-// === 사이드 메뉴 관련 이벤트 리스너 ===
-const sideMenu = document.getElementById('side-menu');
-const overlay = document.getElementById('overlay');
-
-function openMenu() {
-    sideMenu.style.width = '250px';
-    overlay.style.display = 'block';
-}
-function closeMenu() {
-    sideMenu.style.width = '0';
-    overlay.style.display = 'none';
-}
-
-document.getElementById('hamburger-menu').addEventListener('click', openMenu);
-document.getElementById('close-menu').addEventListener('click', closeMenu);
-overlay.addEventListener('click', closeMenu);
-
-document.getElementById('menu-profile').addEventListener('click', (e) => {
-    e.preventDefault();
-    document.getElementById('profileModal').style.display = 'block';
-    closeMenu();
-});
-
-// 기타 메뉴 항목 (준비 중 알림)
-document.getElementById('menu-filter').addEventListener('click', (e) => { e.preventDefault(); alert('감각 필터 기능은 고민중.'); });
-document.getElementById('menu-settings').addEventListener('click', (e) => { e.preventDefault(); alert('설정 기능 준비 중입니다.'); });
-document.getElementById('menu-help').addEventListener('click', (e) => { e.preventDefault(); alert('도움말 기능 준비 중입니다.'); });
-document.getElementById('menu-contact').addEventListener('click', (e) => { e.preventDefault(); alert('문의 기능 준비 중입니다.'); });
-
-// --- 6. UI INITIALIZATION & HELPERS ---
-
-function showToast(msg, isError = false) {
-    const toast = document.getElementById("toast");
-    toast.textContent = isError ? `❌ ${msg}` : msg;
-    toast.style.backgroundColor = isError ? '#c73e3e' : '#323232';
-    toast.className = "show";
-    setTimeout(() => toast.className = toast.className.replace("show", ""), 3000);
-}
-
-window.addEventListener('load', function () {
-    // 현재 위치 가져오기
-    if ('geolocation' in navigator) {
-        navigator.geolocation.getCurrentPosition(position => {
-            const lat = position.coords.latitude;
-            const lng = position.coords.longitude;
-            map.setView([lat, lng], 16);
-            L.marker([lat, lng]).addTo(map).bindPopup('현재 위치').openPopup();
-        }, () => {
-            showToast("위치 정보를 가져올 수 없습니다.", true);
+        this.addSensoryData(this.clickedLocation, reportData);
+        e.target.reset();
+        document.querySelectorAll('.range-slider').forEach(slider => {
+            slider.parentNode.querySelector('.range-value').textContent = slider.value;
         });
+        this.closeInputPanel();
+        this.map.closePopup();
+        this.showToast('감각 정보가 물들었어요!', 'success');
     }
 
-    // 저장된 데이터 로드
-    const savedGridData = localStorage.getItem('gridData');
-    if (savedGridData) {
-        try {
-            const parsedData = JSON.parse(savedGridData);
-            if (Array.isArray(parsedData)) {
-                gridData = new Map(parsedData);
-                // 토글이 켜져있으면 데이터 표시
-                if (document.getElementById('showRegisteredToggle').checked) {
-                    renderGridVisuals();
+    handleProfileSubmit(e) {
+        e.preventDefault();
+        const formData = new FormData(e.target);
+        const profileData = {
+            noiseThreshold: parseInt(formData.get('noiseThreshold')),
+            lightThreshold: parseInt(formData.get('lightThreshold')),
+            odorThreshold: parseInt(formData.get('odorThreshold')),
+            crowdThreshold: parseInt(formData.get('crowdThreshold'))
+        };
+        this.saveSensitivityProfile(profileData);
+        this.closeProfilePanel();
+        this.refreshVisualization();
+        this.showToast('나만의 감각 프로필이 저장됐어요!', 'success');
+    }
+
+    addSensoryData(latlng, reportData) {
+        const gridKey = this.getGridKey(latlng);
+        if (!this.gridData.has(gridKey)) {
+            this.gridData.set(gridKey, { reports: [], bounds: this.getGridBounds(gridKey) });
+        }
+        const cellData = this.gridData.get(gridKey);
+        cellData.reports.push(reportData);
+        this.saveGridData();
+        this.refreshVisualization();
+    }
+
+    deleteReport(gridKey, reportId) {
+        if (!confirm('이 감각 정보를 지울까요?')) return;
+        const cellData = this.gridData.get(gridKey);
+        if (!cellData) return;
+        cellData.reports = cellData.reports.filter(report => report.id !== reportId);
+        if (cellData.reports.length === 0) this.gridData.delete(gridKey);
+        this.saveGridData();
+        this.refreshVisualization();
+        this.map.closePopup();
+        this.showToast('감각 정보가 지워졌습니다', 'success');
+    }
+
+    // --- Visualization ---
+    refreshVisualization() {
+        if (!this.showData) return;
+        this.sensoryLayers.clearLayers();
+        const profile = this.getSensitivityProfile();
+        const intensity = parseFloat(document.getElementById('intensitySlider').value);
+        const currentTime = Date.now();
+
+        this.gridData.forEach((cellData, gridKey) => {
+            if (!cellData.reports || cellData.reports.length === 0) return;
+            
+            let totalWeight = 0;
+            let weightedScores = { noise: 0, light: 0, odor: 0, crowd: 0 };
+            let hasWheelchairIssue = false;
+
+            cellData.reports.forEach(report => {
+                const timeDecay = this.calculateTimeDecay(report.timestamp, report.type, currentTime);
+                if (timeDecay > 0.1) {
+                    const weight = timeDecay;
+                    Object.keys(weightedScores).forEach(key => weightedScores[key] += report[key] * weight);
+                    totalWeight += weight;
+                    if (report.wheelchair) hasWheelchairIssue = true;
                 }
-            }
-        } catch (e) {
-            console.error("Error parsing gridData from localStorage", e);
+            });
+
+            if (totalWeight === 0) return;
+
+            Object.keys(weightedScores).forEach(key => weightedScores[key] /= totalWeight);
+            const personalizedScore = this.calculatePersonalizedScore(weightedScores, profile);
+            this.createWatercolorMarker(gridKey, weightedScores, personalizedScore, hasWheelchairIssue, intensity, totalWeight);
+        });
+    }
+
+    createWatercolorMarker(gridKey, sensoryData, personalizedScore, hasWheelchairIssue, intensity, weight) {
+        const bounds = this.getGridBounds(gridKey);
+        const center = bounds.getCenter();
+        let color = '#cccccc';
+        let size = 20;
+        let opacity = 0.6;
+        let content = '';
+
+        switch (this.currentMode) {
+            case 'intensity':
+                const maxValue = Math.max(sensoryData.noise, sensoryData.light, sensoryData.odor, sensoryData.crowd);
+                const colors = { noise: '#ff6b9d', light: '#ffd93d', odor: '#6bcf7f', crowd: '#4ecdc4' };
+                const dominantSense = Object.keys(sensoryData).reduce((a, b) => sensoryData[a] > sensoryData[b] ? a : b);
+                color = colors[dominantSense];
+                size = 20 + (maxValue * 3) * intensity;
+                opacity = 0.5 + (maxValue / 10) * 0.4;
+                content = `🔥`;
+                break;
+            case 'gradient':
+                const gradScore = Math.max(0, Math.min(10, personalizedScore));
+                const hue_grad = 240 - (gradScore * 18); // Blue(6) to Magenta(300) to Red(0)
+                color = `hsl(${hue_grad}, 80%, 60%)`;
+                size = 25 + (gradScore * 2.5) * intensity;
+                opacity = 0.6 * intensity;
+                content = `🌈`;
+                break;
+            default: // comfort
+                const score = Math.max(0, Math.min(10, personalizedScore));
+                const hue_comfort = (10 - score) * 12; // 0 (red) to 120 (green)
+                color = `hsl(${hue_comfort}, 70%, 55%)`;
+                size = 20 + (score * 3) * intensity;
+                opacity = 0.6 + (weight / 5) * 0.3; // More reports = more solid
+                content = hasWheelchairIssue ? '♿' : Math.round(score);
+        }
+
+        const bleedSize = size * 1.5;
+        const icon = L.divIcon({
+            className: 'watercolor-marker',
+            html: `
+                <div class="droplet-bleed" style="width:${bleedSize}px; height:${bleedSize}px; background:${color}; top:-${bleedSize*0.25}px; left:-${bleedSize*0.25}px;"></div>
+                <div class="droplet-content" style="width:${size}px; height:${size}px; background:${color}; opacity:${opacity};">
+                    ${content}
+                </div>
+            `,
+            iconSize: [bleedSize, bleedSize],
+            iconAnchor: [bleedSize / 2, bleedSize / 2]
+        });
+
+        const marker = L.marker(center, { icon });
+        marker.on('click', () => {
+            this.showLocationPopup(center, gridKey, this.gridData.get(gridKey));
+        });
+        this.sensoryLayers.addLayer(marker);
+    }
+    
+    // --- Routing ---
+    toggleRouteMode() {
+        this.isRouteMode = !this.isRouteMode;
+        const btn = document.getElementById('routeBtn');
+        const controls = document.getElementById('routeControls');
+        if (this.isRouteMode) {
+            btn.classList.add('active');
+            controls.classList.add('show');
+            document.getElementById('routeStatus').textContent = '출발지 선택';
+            this.showToast('지도에서 출발지를 콕! 찍어주세요', 'info');
+        } else {
+            this.cancelRouteMode();
         }
     }
-    const savedProfile = JSON.parse(localStorage.getItem('sensoryProfile') || '{}');
-    const profileForm = document.getElementById('profileForm');
-    if (profileForm && Object.keys(savedProfile).length > 0) {
-        for (const [key, value] of Object.entries(savedProfile)) {
-            if (profileForm[key]) {
-                profileForm[key].value = value;
-                profileForm[key].dispatchEvent(new Event('input'));
-            }
+
+    cancelRouteMode() {
+        this.isRouteMode = false;
+        document.getElementById('routeBtn').classList.remove('active');
+        document.getElementById('routeControls').classList.remove('show');
+        Object.values(this.routeMarkers).forEach(marker => {
+            if (marker) this.map.removeLayer(marker);
+        });
+        if (this.currentRoute) {
+            this.map.removeLayer(this.currentRoute);
+            this.currentRoute = null;
+        }
+        this.routePoints = { start: null, end: null };
+        this.routeMarkers = { start: null, end: null };
+    }
+    
+    handleRouteClick(latlng) {
+        if (!this.routePoints.start) this.setRoutePoint('start', latlng);
+        else if (!this.routePoints.end) {
+            this.setRoutePoint('end', latlng);
+            this.calculateRoute();
         }
     }
     
-    // 슬라이더 값 표시
-    document.querySelectorAll('input[type="range"]').forEach(slider => {
-        let span = slider.previousElementSibling?.querySelector('span');
-        if (!span) {
-            span = document.createElement('span');
-            slider.previousElementSibling.appendChild(span);
+    setRoutePoint(type, latlng) {
+        if (this.routeMarkers[type]) this.map.removeLayer(this.routeMarkers[type]);
+        this.routePoints[type] = latlng;
+        const iconColor = type === 'start' ? '#10b981' : '#ef4444';
+        const iconHTML = type === 'start' ? '<i class="fas fa-play"></i>' : '<i class="fas fa-flag-checkered"></i>';
+        const icon = L.divIcon({
+            className: 'route-marker',
+            html: `<div style="background: ${iconColor}; width: 30px; height: 30px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.3); display:flex; align-items:center; justify-content:center; color:white; font-size:14px;">${iconHTML}</div>`,
+            iconSize: [30, 30],
+            iconAnchor: [15, 15]
+        });
+        this.routeMarkers[type] = L.marker(latlng, { icon }).addTo(this.map);
+        const status = type === 'start' ? '도착지 선택' : '경로 계산 중...';
+        document.getElementById('routeStatus').textContent = status;
+    }
+
+    async calculateRoute() {
+        if (!this.routePoints.start || !this.routePoints.end) return;
+        this.showToast('가장 쾌적한 길을 찾고 있어요...', 'info');
+        const { start, end } = this.routePoints;
+        const url = `https://router.project-osrm.org/route/v1/walking/${start.lng},${start.lat};${end.lng},${end.lat}?overview=full&geometries=geojson&alternatives=true`;
+        
+        try {
+            const response = await fetch(url);
+            const data = await response.json();
+            if (data.routes && data.routes.length > 0) {
+                const bestRoute = this.selectBestRoute(data.routes);
+                this.displayRoute(bestRoute);
+                document.getElementById('routeStatus').textContent = '경로 생성 완료';
+                this.showToast('나만의 감각 경로 완성!', 'success');
+            } else { throw new Error('경로를 찾을 수 없습니다'); }
+        } catch (error) {
+            this.showToast('경로 계산에 실패했어요', 'error');
+            document.getElementById('routeStatus').textContent = '계산 실패';
         }
-        const updateSliderValue = () => span.textContent = `(${slider.value})`;
-        updateSliderValue();
-        slider.addEventListener('input', updateSliderValue);
-    });
-});
+    }
+
+    selectBestRoute(routes) {
+        const profile = this.getSensitivityProfile();
+        let bestRoute = null;
+        let bestScore = Infinity;
+
+        routes.forEach(route => {
+            const sensoryScore = this.calculateRouteSensoryScore(route.geometry, profile);
+            const distance = route.distance;
+            const totalScore = (distance * 0.0003) + (sensoryScore * 0.7); // 30% distance, 70% comfort
+            if (totalScore < bestScore) {
+                bestScore = totalScore;
+                bestRoute = route;
+            }
+        });
+        return bestRoute || routes[0];
+    }
+
+    calculateRouteSensoryScore(geometry, profile) {
+        let totalScore = 0;
+        let segmentCount = 0;
+        const coordinates = geometry.coordinates;
+
+        for (let i = 0; i < coordinates.length - 1; i++) {
+            const point = L.latLng(coordinates[i][1], coordinates[i][0]);
+            const gridKey = this.getGridKey(point);
+            const cellData = this.gridData.get(gridKey);
+            let segmentScore = 2.5; // Neutral score
+
+            if (cellData && cellData.reports && cellData.reports.length > 0) {
+                let weightedScore = 0;
+                let totalWeight = 0;
+                const currentTime = Date.now();
+                cellData.reports.forEach(report => {
+                    const timeDecay = this.calculateTimeDecay(report.timestamp, report.type, currentTime);
+                    if (timeDecay > 0.1) {
+                        const weight = timeDecay;
+                        const reportScore = this.calculatePersonalizedScore(report, profile);
+                        weightedScore += reportScore * weight;
+                        totalWeight += weight;
+                    }
+                });
+                if (totalWeight > 0) segmentScore = weightedScore / totalWeight;
+            }
+            totalScore += segmentScore;
+            segmentCount++;
+        }
+        return segmentCount > 0 ? totalScore / segmentCount : 2.5;
+    }
+
+    displayRoute(route) {
+        if (this.currentRoute) this.map.removeLayer(this.currentRoute);
+        this.currentRoute = L.geoJSON(route.geometry, {
+            style: { color: '#4a90e2', weight: 8, opacity: 0.8, lineCap: 'round', dashArray: '1, 10' }
+        }).addTo(this.map);
+        this.map.fitBounds(this.currentRoute.getBounds(), { padding: [50, 50] });
+    }
+
+    // --- Utility & Helper Methods ---
+    showLocationPopup(latlng, gridKey, cellData) {
+        const hasData = cellData && cellData.reports && cellData.reports.length > 0;
+        let popupContent = `
+            <div class="popup-header">
+                <div class="popup-title">장소 정보</div>
+                <div class="popup-subtitle">${latlng.lat.toFixed(4)}, ${latlng.lng.toFixed(4)}</div>
+            </div>
+            <div class="action-grid">
+                <button class="action-btn start" data-lat="${latlng.lat}" data-lng="${latlng.lng}"><i class="fas fa-play"></i> 출발</button>
+                <button class="action-btn end" data-lat="${latlng.lat}" data-lng="${latlng.lng}"><i class="fas fa-flag-checkered"></i> 도착</button>
+            </div>`;
+        if (hasData) {
+            popupContent += `<div class="data-summary"><div class="summary-title">등록된 정보 (${cellData.reports.length}개)</div>`;
+            cellData.reports.slice(0, 3).forEach(report => {
+                popupContent += `<div class="data-item"><div>
+                    <span class="data-badge">소음 ${report.noise}</span><span class="data-badge">빛 ${report.light}</span>
+                    </div><button class="delete-btn" onclick="window.sensmapApp.deleteReport('${gridKey}', ${report.id})">삭제</button></div>`;
+            });
+            popupContent += `</div>`;
+        }
+        const popup = L.popup({className: 'custom-popup'}).setLatLng(latlng).setContent(popupContent).openOn(this.map);
+        
+        setTimeout(() => {
+            popup.getElement().querySelectorAll('.action-btn.start, .action-btn.end').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    this.setRoutePoint(btn.dataset.type, L.latLng(parseFloat(btn.dataset.lat), parseFloat(btn.dataset.lng)));
+                    this.map.closePopup();
+                    if (!this.isRouteMode) this.toggleRouteMode();
+                });
+            });
+        }, 100);
+    }
+    
+    toggleDataDisplay() {
+        this.showData = !this.showData;
+        const btn = document.getElementById('showDataBtn');
+        if (this.showData) {
+            btn.classList.add('active');
+            btn.querySelector('i').className = 'fas fa-eye';
+            this.refreshVisualization();
+        } else {
+            btn.classList.remove('active');
+            btn.querySelector('i').className = 'fas fa-eye-slash';
+            this.sensoryLayers.clearLayers();
+        }
+    }
+    
+    setVisualizationMode(mode) {
+        this.currentMode = mode;
+        document.querySelectorAll('.mode-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.mode === mode);
+        });
+        this.refreshVisualization();
+    }
+
+    calculateTimeDecay(timestamp, type, currentTime) {
+        const ageHours = (currentTime - timestamp) / 3600000;
+        const maxAge = type === 'irregular' ? 6 : 168; // 6 hours or 1 week
+        const decayRate = type === 'irregular' ? 0.8 : 0.3;
+        if (ageHours >= maxAge) return 0;
+        return Math.exp(-decayRate * (ageHours / maxAge));
+    }
+
+    calculatePersonalizedScore(sensoryData, profile) {
+        const weights = {
+            noise: profile.noiseThreshold / 10, light: profile.lightThreshold / 10,
+            odor: profile.odorThreshold / 10, crowd: profile.crowdThreshold / 10
+        };
+        let totalScore = 0, totalWeight = 0;
+        Object.keys(weights).forEach(key => {
+            if (sensoryData[key] !== undefined) {
+                totalScore += sensoryData[key] * weights[key];
+                totalWeight += weights[key];
+            }
+        });
+        return totalWeight > 0 ? totalScore / totalWeight : 0;
+    }
+
+    cleanupExpiredData() {
+        const currentTime = Date.now();
+        let hasChanges = false;
+        this.gridData.forEach((cellData, gridKey) => {
+            const validReports = cellData.reports.filter(report => this.calculateTimeDecay(report.timestamp, report.type, currentTime) > 0);
+            if (validReports.length !== cellData.reports.length) {
+                hasChanges = true;
+                if (validReports.length === 0) this.gridData.delete(gridKey);
+                else cellData.reports = validReports;
+            }
+        });
+        if (hasChanges) {
+            this.saveGridData();
+            this.refreshVisualization();
+        }
+    }
+
+    getGridKey(latlng) {
+        const projected = L.CRS.EPSG3857.project(latlng);
+        return `${Math.floor(projected.x / this.GRID_CELL_SIZE)},${Math.floor(projected.y / this.GRID_CELL_SIZE)}`;
+    }
+
+    getGridBounds(gridKey) {
+        const [x, y] = gridKey.split(',').map(Number);
+        const p1 = L.point(x * this.GRID_CELL_SIZE, y * this.GRID_CELL_SIZE);
+        const p2 = L.point((x + 1) * this.GRID_CELL_SIZE, (y + 1) * this.GRID_CELL_SIZE);
+        return L.latLngBounds(L.CRS.EPSG3857.unproject(p1), L.CRS.EPSG3857.unproject(p2));
+    }
+    
+    getSensitivityProfile() {
+        const saved = JSON.parse(localStorage.getItem('sensoryProfile') || '{}');
+        return {
+            noiseThreshold: saved.noiseThreshold || 5, lightThreshold: saved.lightThreshold || 5,
+            odorThreshold: saved.odorThreshold || 5, crowdThreshold: saved.crowdThreshold || 5
+        };
+    }
+
+    saveSensitivityProfile(profile) { localStorage.setItem('sensoryProfile', JSON.stringify(profile)); }
+    saveGridData() { localStorage.setItem('gridData', JSON.stringify(Array.from(this.gridData.entries()))); }
+
+    loadSavedData() {
+        try {
+            const savedGridData = localStorage.getItem('gridData');
+            if (savedGridData) this.gridData = new Map(JSON.parse(savedGridData));
+            const savedProfile = this.getSensitivityProfile();
+            const profileForm = document.getElementById('profileForm');
+            Object.entries(savedProfile).forEach(([key, value]) => {
+                const input = profileForm.querySelector(`[name="${key}"]`);
+                if (input) {
+                    input.value = value;
+                    input.parentNode.querySelector('.range-value').textContent = value;
+                }
+            });
+            this.refreshVisualization();
+        } catch (error) { console.error('Error loading saved data:', error); }
+    }
+
+    setupGeolocation() {
+        if ('geolocation' in navigator) {
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    this.map.setView([position.coords.latitude, position.coords.longitude], 16);
+                    this.showToast('현재 위치로 이동했어요!', 'success');
+                },
+                () => this.showToast('위치 정보를 가져올 수 없어요', 'error')
+            );
+        }
+    }
+
+    showToast(message, type = 'info') {
+        const toast = document.getElementById('toast');
+        toast.textContent = message;
+        toast.className = `toast show ${type}`;
+        setTimeout(() => toast.classList.remove('show'), 3000);
+    }
+}
+
+window.sensmapApp = new SensmapApp();
