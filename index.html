@@ -3,27 +3,13 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Sensmap - 감각 친화적 지도</title>
+    <title>Sensmap - Advanced Sensory Navigation</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet-geosearch@3.11.0/dist/geosearch.css" />
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
     <link rel="stylesheet" href="styles.css">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&display=swap" rel="stylesheet">
 </head>
 <body>
-    <div class="svg-filters">
-        <svg xmlns="http://www.w3.org/2000/svg" version="1.1">
-            <defs>
-                <filter id="watercolor-texture">
-                    <feTurbulence type="fractalNoise" baseFrequency="0.04" numOctaves="3" seed="10" result="noise" />
-                    <feDisplacementMap in="SourceGraphic" in2="noise" scale="6" />
-                </filter>
-            </defs>
-        </svg>
-    </div>
-
     <div class="header-controls">
         <div class="logo">
             <i class="fas fa-map-marked-alt"></i>
@@ -31,16 +17,16 @@
         </div>
         
         <div class="header-center">
-            <div class="mode-selector hand-drawn-box">
+            <div class="mode-selector">
                 <button class="mode-btn active" data-mode="comfort">🎯 쾌적도</button>
                 <button class="mode-btn" data-mode="intensity">🔥 강도</button>
                 <button class="mode-btn" data-mode="gradient">🌈 그라데이션</button>
             </div>
             
-            <div class="intensity-control hand-drawn-box">
-                <span>표시 강도</span>
+            <div class="intensity-control">
+                <span style="font-size: 12px; color: #6b7280;">표시 강도</span>
                 <input type="range" class="intensity-slider" id="intensitySlider" min="0.3" max="1" step="0.1" value="0.7">
-                <span id="intensityValue">0.7</span>
+                <span id="intensityValue" style="font-size: 12px; font-weight: 600;">0.7</span>
             </div>
         </div>
         
@@ -59,12 +45,12 @@
 
     <div id="map"></div>
 
-    <div class="input-panel" id="inputPanel">
-        <div class="panel-handle" id="cancelBtn"></div>
+    <div class="side-panel" id="sidePanel">
         <div class="panel-header">
             <div class="panel-title">감각 정보 입력</div>
             <div class="panel-subtitle">현재 위치의 감각 정보를 기록해주세요</div>
         </div>
+        
         <div class="panel-content">
             <form id="sensoryForm">
                 <div class="form-group">
@@ -72,69 +58,83 @@
                     <div class="type-selector">
                         <div class="type-option selected" data-type="irregular">
                             <div class="type-title">⚡ 일시적</div>
-                            <div class="type-desc">공사, 이벤트 등<br>(단기적)</div>
+                            <div class="type-desc">공사, 이벤트 등<br>(30분-6시간)</div>
                         </div>
                         <div class="type-option" data-type="regular">
                             <div class="type-title">🏢 지속적</div>
-                            <div class="type-desc">건물, 도로 특성<br>(장기적)</div>
+                            <div class="type-desc">건물, 도로 특성<br>(1일-1주일)</div>
                         </div>
                     </div>
                 </div>
-                <div class="sensory-grid">
-                    <div class="form-group">
-                        <label class="form-label">소음 🔊</label>
-                        <div class="slider-container">
-                            <input type="range" class="range-slider" name="noise" min="0" max="10" value="5">
-                            <div class="range-value">5</div>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">빛 💡</label>
-                        <div class="slider-container">
-                            <input type="range" class="range-slider" name="light" min="0" max="10" value="5">
-                            <div class="range-value">5</div>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">냄새 👃</label>
-                        <div class="slider-container">
-                            <input type="range" class="range-slider" name="odor" min="0" max="10" value="5">
-                            <div class="range-value">5</div>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">혼잡도 👥</label>
-                        <div class="slider-container">
-                            <input type="range" class="range-slider" name="crowd" min="0" max="10" value="5">
-                            <div class="range-value">5</div>
-                        </div>
-                    </div>
-                </div>
+
                 <div class="form-group">
-                    <label class="checkbox-label">
+                    <label class="form-label">소음 수준</label>
+                    <div class="slider-container">
+                        <input type="range" class="range-slider" name="noise" min="0" max="10" value="5">
+                        <div class="range-value">5</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">빛 강도</label>
+                    <div class="slider-container">
+                        <input type="range" class="range-slider" name="light" min="0" max="10" value="5">
+                        <div class="range-value">5</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">냄새 정도</label>
+                    <div class="slider-container">
+                        <input type="range" class="range-slider" name="odor" min="0" max="10" value="5">
+                        <div class="range-value">5</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">혼잡도</label>
+                    <div class="slider-container">
+                        <input type="range" class="range-slider" name="crowd" min="0" max="10" value="5">
+                        <div class="range-value">5</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 14px;">
                         <input type="checkbox" name="wheelchair">
                         <span>♿ 휠체어 접근 제약</span>
                     </label>
                 </div>
-                <button type="submit" class="primary-btn">💧 감각 정보 저장</button>
+
+                <button type="submit" class="primary-btn">
+                    <i class="fas fa-save"></i>
+                    감각 정보 저장
+                </button>
+                
+                <button type="button" class="secondary-btn" id="cancelBtn">
+                    취소
+                </button>
             </form>
         </div>
     </div>
-    
+
+    <!-- Profile Panel -->
     <div class="side-panel" id="profilePanel">
         <div class="panel-header">
-            <div class="panel-title">감각 프로필 설정</div>
-            <div class="panel-subtitle">개인 민감도에 맞춰 지도를 조절하세요</div>
+            <div class="panel-title">감각 프로필</div>
+            <div class="panel-subtitle">개인 민감도를 설정하여 맞춤형 경로를 찾아보세요</div>
         </div>
+        
         <div class="panel-content">
             <form id="profileForm">
-                 <div class="form-group">
+                <div class="form-group">
                     <label class="form-label">소음 민감도</label>
                     <div class="slider-container">
                         <input type="range" class="range-slider" name="noiseThreshold" min="0" max="10" value="5">
                         <div class="range-value">5</div>
                     </div>
                 </div>
+
                 <div class="form-group">
                     <label class="form-label">빛 민감도</label>
                     <div class="slider-container">
@@ -142,6 +142,7 @@
                         <div class="range-value">5</div>
                     </div>
                 </div>
+
                 <div class="form-group">
                     <label class="form-label">냄새 민감도</label>
                     <div class="slider-container">
@@ -149,6 +150,7 @@
                         <div class="range-value">5</div>
                     </div>
                 </div>
+
                 <div class="form-group">
                     <label class="form-label">혼잡 민감도</label>
                     <div class="slider-container">
@@ -156,29 +158,36 @@
                         <div class="range-value">5</div>
                     </div>
                 </div>
-                <button type="submit" class="primary-btn">👤 프로필 저장</button>
-                <button type="button" class="secondary-btn" id="cancelProfileBtn">취소</button>
+
+                <button type="submit" class="primary-btn">
+                    <i class="fas fa-user-check"></i>
+                    프로필 저장
+                </button>
+                
+                <button type="button" class="secondary-btn" id="cancelProfileBtn">
+                    취소
+                </button>
             </form>
         </div>
     </div>
 
-    <button class="fab" id="addDataFab">
-        <i class="fas fa-plus"></i>
-    </button>
-    
     <div class="route-controls" id="routeControls">
         <div class="route-info">
             <i class="fas fa-route"></i>
+            <span>경로 계획 모드</span>
             <div class="route-badge" id="routeStatus">출발지 선택</div>
         </div>
-        <button class="secondary-btn" id="cancelRouteBtn">취소</button>
+        <button class="secondary-btn" id="cancelRouteBtn">
+            <i class="fas fa-times"></i>
+            취소
+        </button>
     </div>
 
-    <div class="overlay" id="overlay"></div>
     <div class="toast" id="toast"></div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/leaflet-geosearch@3.11.0/dist/geosearch.umd.js"></script>
+    <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
     <script src="script.js"></script>
 </body>
 </html>
