@@ -19,6 +19,8 @@ class SensmapApp {
         this.setupGeolocation();
     }
 
+    // Sets up the base tile layer for the map. Adds a search box control to enable location searching
+    // 지도 기본 타일 레이어를 설정합니다. 위치 검색 기능이 있는 검색 상자 컨트롤을 추가합니다
     initializeMap() {
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap contributors',
@@ -37,6 +39,8 @@ class SensmapApp {
         this.map.addControl(searchControl);
     }
 
+    // Binds UI buttons and sliders to their event handlers for user interaction
+    // 사용자 인터페이스 버튼과 슬라이더에 이벤트 핸들러를 연결합니다
     setupEventListeners() {
         // Header controls
         document.querySelectorAll('.mode-btn').forEach(btn => {
@@ -82,7 +86,9 @@ class SensmapApp {
         // Auto cleanup old data
         setInterval(() => this.cleanupExpiredData(), 60000); // Every minute
     }
-
+    
+    // Handles map clicks based on mode: selects route points if in route mode, otherwise sets clicked location and shows sensory data popup.
+    // 현재 모드에 따라 지도 클릭을 처리합니다: 경로 모드일 때는 경로 지점을 선택하고, 그렇지 않으면 클릭한 위치를 설정하고 감각 정보 팝업을 표시합니다.
     handleMapClick(e) {
         if (this.isRouteMode) {
             this.handleRouteClick(e.latlng);
@@ -96,6 +102,8 @@ class SensmapApp {
         this.showLocationPopup(e.latlng, gridKey, cellData);
     }
 
+    // Handles user clicks in route mode to set start and end points for routing.
+    // 사용자가 경로 모드에서 클릭한 위치를 시작점과 끝점으로 설정합니다.
     handleRouteClick(latlng) {
         if (!this.routePoints.start) {
             this.setRoutePoint('start', latlng);
@@ -105,6 +113,8 @@ class SensmapApp {
         }
     }
 
+    // Sets the start or end point for route planning based on user click input.
+    // 사용자 클릭에 따라 경로 계획의 시작점 또는 끝점을 설정합니다.
     setRoutePoint(type, latlng) {
         if (this.routeMarkers[type]) {
             this.map.removeLayer(this.routeMarkers[type]);
@@ -126,6 +136,8 @@ class SensmapApp {
         document.getElementById('routeStatus').textContent = status;
     }
 
+    // Calculates the walking route between the selected start and end points using a routing API.
+    // 선택된 출발지와 도착지 사이의 도보 경로를 계산합니다. 경로가 계산되면 지도에 표시하고, 이전 경로는 제거합니다.
     async calculateRoute() {
         if (!this.routePoints.start || !this.routePoints.end) return;
 
@@ -156,6 +168,8 @@ class SensmapApp {
         }
     }
 
+    // Among multiple possible routes, selects the one with the lowest sensory intensity    
+    // 여러 개의 경로 중 감각 자극이 가장 낮은 경로를 선택합니다. 감각 데이터를 기반으로 경로의 쾌적도를 평가합니다.
     selectBestRoute(routes) {
         const profile = this.getSensitivityProfile();
         let bestRoute = routes[0];
@@ -177,6 +191,8 @@ class SensmapApp {
         return bestRoute;
     }
 
+    // Calculates the total sensory score for a given route by summing up the intensity of grid cells along the path.
+    // 주어진 경로를 따라 지나가는 격자 셀의 감각 자극 강도를 합산하여 전체 감각 점수를 계산합니다. 점수가 낮을수록 더 쾌적한 경로로 간주됩니다.
     calculateRouteSensoryScore(geometry, profile) {
         let totalScore = 0;
         let segmentCount = 0;
@@ -216,6 +232,8 @@ class SensmapApp {
         return segmentCount > 0 ? totalScore / segmentCount : 2.5;
     }
 
+    // Displays the selected route on the map using a polyline.
+    // 선택된 경로를 지도에 폴리라인으로 표시합니다. 이전에 표시된 경로가 있다면 제거한 후 새 경로를 시각화합니다.
     displayRoute(route) {
         if (this.currentRoute) {
             this.map.removeLayer(this.currentRoute);
@@ -257,6 +275,8 @@ class SensmapApp {
         this.map.fitBounds(this.currentRoute.getBounds(), { padding: [50, 50] });
     }
 
+    // Displays a popup on the map at the clicked location showing sensory data for that grid cell.
+    // 클릭한 위치의 격자 셀에 대한 감각 데이터를 팝업으로 지도에 표시합니다. 사용자가 정보를 확인하고 입력할 수 있도록 합니다.
     showLocationPopup(latlng, gridKey, cellData) {
         const hasData = cellData && cellData.reports && cellData.reports.length > 0;
         
@@ -346,22 +366,30 @@ class SensmapApp {
         }, 100);
     }
 
+    // Opens the sensory input panel for users to submit or edit sensory data.
+    // 사용자가 감각 데이터를 입력하거나 수정할 수 있도록 감각 정보 입력 패널을 엽니다.
     openSensoryPanel() {
         this.closePanels();
         document.getElementById('sidePanel').classList.add('open');
     }
 
+    // Opens the user profile panel by first closing any open panels, then adding the 'open' class to the profile panel to make it visible.
+    // 사용자 프로필 패널을 열기 위해, 먼저 다른 패널들을 닫고 'profilePanel' 요소에 'open' 클래스를 추가하여 보이도록 만듭니다.
     openProfilePanel() {
         this.closePanels();
         document.getElementById('profilePanel').classList.add('open');
     }
 
+    // Closes all side panels by removing the 'open' class from each panel element.
+    // 모든 사이드 패널에서 'open' 클래스를 제거하여 패널을 닫습니다.
     closePanels() {
         document.querySelectorAll('.side-panel').forEach(panel => {
             panel.classList.remove('open');
         });
     }
 
+    // Toggles the display of sensory data on the map. If data is currently shown, it hides it; if hidden, it shows it again.
+    // 지도에서 감각 데이터를 표시하거나 숨기는 기능입니다. 현재 데이터가 보이면 숨기고 숨겨져 있으면 다시 표시합니다.
     toggleDataDisplay() {
         this.showData = !this.showData;
         const btn = document.getElementById('showDataBtn');
@@ -377,6 +405,8 @@ class SensmapApp {
         }
     }
 
+    // Toggle route mode on/off; show/hide controls and update UI accordingly.
+    // 경로 모드를 켜거나 끄고, 관련 UI와 컨트롤을 보여주거나 숨깁니다.
     toggleRouteMode() {
         this.isRouteMode = !this.isRouteMode;
         const btn = document.getElementById('routeBtn');
@@ -392,6 +422,8 @@ class SensmapApp {
         }
     }
 
+    // Cancel route mode, reset UI and clear all route markers and lines.
+    // 경로 모드를 취소하고 UI를 초기화하며, 모든 경로 마커와 선을 제거합니다.
     cancelRouteMode() {
         this.isRouteMode = false;
         document.getElementById('routeBtn').classList.remove('active');
@@ -410,6 +442,8 @@ class SensmapApp {
         this.routeMarkers = { start: null, end: null };
     }
 
+    // Set the current visualization mode, update button states, and refresh the map display.
+    // 현재 시각화 모드를 설정하고 버튼 상태를 업데이트한 뒤 지도를 다시 그립니다.
     setVisualizationMode(mode) {
         this.currentMode = mode;
         document.querySelectorAll('.mode-btn').forEach(btn => {
@@ -418,6 +452,8 @@ class SensmapApp {
         this.refreshVisualization();
     }
 
+    // Handle submission of sensory data form, gather input values, and prepare report data.
+    // 감각 정보 폼 제출을 처리하고 입력값을 수집하여 보고서 데이터를 준비합니다.
     handleSensorySubmit(e) {
         e.preventDefault();
         if (!this.clickedLocation) return;
@@ -457,6 +493,8 @@ class SensmapApp {
         this.showToast('감각 정보가 저장되었습니다!', 'success');
     }
 
+    // Handle profile form submission, save updated sensitivity thresholds, and refresh visualization.
+    // 프로필 폼 제출을 처리하고, 감각 임계값을 저장한 후 시각화를 갱신합니다.
     handleProfileSubmit(e) {
         e.preventDefault();
         const formData = new FormData(e.target);
@@ -474,6 +512,8 @@ class SensmapApp {
         this.showToast('감각 프로필이 업데이트되었습니다!', 'success');
     }
 
+    // Add new sensory report data to the grid cell corresponding to the given location.
+    // 위치에 해당하는 그리드 셀에 새로운 감각 보고 데이터를 추가합니다.
     addSensoryData(latlng, reportData) {
         const gridKey = this.getGridKey(latlng);
         
@@ -491,6 +531,8 @@ class SensmapApp {
         this.refreshVisualization();
     }
 
+    // Delete a specific sensory report from a grid cell after user confirmation.
+    // 사용자 확인 후 특정 그리드 셀에서 감각 보고를 삭제합니다.
     deleteReport(gridKey, reportId) {
         if (!confirm('이 감각 정보를 삭제하시겠습니까?')) return;
 
@@ -509,6 +551,8 @@ class SensmapApp {
         this.showToast('감각 정보가 삭제되었습니다', 'success');
     }
 
+    // Refreshes the sensory data visualization on the map.
+    // 지도 위에 감각 데이터 시각화를 갱신합니다.
     refreshVisualization() {
         if (!this.showData) return;
 
@@ -552,6 +596,8 @@ class SensmapApp {
         });
     }
 
+    // Calculates the decay factor for a report's timestamp to reduce its influence over time.
+    // 시간이 지남에 따라 보고서의 영향력을 줄이기 위한 감소 계수를 계산합니다.
     calculateTimeDecay(timestamp, type, currentTime) {
         const ageMs = currentTime - timestamp;
         const ageHours = ageMs / (1000 * 60 * 60);
@@ -573,6 +619,8 @@ class SensmapApp {
         return Math.exp(-decayRate * (ageHours / maxAge));
     }
 
+    // Calculates a personalized comfort score by weighting sensory data according to the user's profile thresholds.
+    // 사용자의 프로필 임계값에 따라 감각 데이터를 가중하여 개인화된 쾌적 점수를 계산합니다.
     calculatePersonalizedScore(sensoryData, profile) {
         const weights = {
             noise: profile.noiseThreshold / 10,
@@ -594,6 +642,8 @@ class SensmapApp {
         return totalWeight > 0 ? totalScore / totalWeight : 0;
     }
 
+    // Creates and adds a visualization marker on the map based on the current mode and sensory data.
+    // 현재 모드와 감각 데이터를 기반으로 지도에 시각화 마커를 생성하고 추가합니다.
     createVisualizationMarker(gridKey, sensoryData, personalizedScore, hasWheelchairIssue, intensity) {
         const bounds = this.getGridBounds(gridKey);
         const center = bounds.getCenter();
@@ -619,6 +669,8 @@ class SensmapApp {
         }
     }
 
+    // Creates a comfort-mode marker representing sensory comfort level on the map.
+    // 감각 편안함 수준을 지도에 나타내는 마커를 생성합니다.
     createComfortMarker(center, score, hasWheelchairIssue, intensity) {
         // Color based on comfort score (inverted - lower score = better = green)
         const normalizedScore = Math.max(0, Math.min(10, score));
@@ -654,6 +706,8 @@ class SensmapApp {
         return L.marker(center, { icon });
     }
 
+    // Creates a marker visualizing the most intense sensory input at a location.
+    // 감각 자극 중 가장 강한 요소를 시각화하는 마커를 생성합니다.
     createIntensityMarker(center, sensoryData, intensity) {
         const maxValue = Math.max(sensoryData.noise, sensoryData.light, sensoryData.odor, sensoryData.crowd);
         const colors = {
@@ -690,6 +744,8 @@ class SensmapApp {
         return L.marker(center, { icon });
     }
 
+    // Create a gradient marker based on discomfort score and intensity.
+    // 불편 점수와 강도(intensity)에 따라 그라디언트 마커를 생성합니다.
     createGradientMarker(center, score, intensity) {
         const size = 20 + (score * 1.5) * intensity;
         const normalizedScore = Math.max(0, Math.min(10, score));
@@ -718,6 +774,8 @@ class SensmapApp {
         return L.marker(center, { icon });
     }
 
+    // Cleans up old sensory data by removing reports that have fully decayed over time.
+    // 시간이 지나 영향력이 사라진 감각 데이터를 삭제하여 데이터를 정리합니다.
     cleanupExpiredData() {
         const currentTime = Date.now();
         let hasChanges = false;
@@ -744,6 +802,8 @@ class SensmapApp {
         }
     }
 
+    // Converts latitude and longitude to a unique grid key based on map projection and cell size.
+    // 위도와 경도를 지도 투영 및 셀 크기를 기준으로 고유한 그리드 키로 변환합니다.
     getGridKey(latlng) {
         const projected = L.CRS.EPSG3857.project(latlng);
         const x = Math.floor(projected.x / this.GRID_CELL_SIZE);
@@ -751,6 +811,8 @@ class SensmapApp {
         return `${x},${y}`;
     }
 
+    // Returns the geographical bounds of a grid cell based on its key.
+    // 그리드 키를 기준으로 해당 셀의 지리적 경계 범위를 반환합니다.
     getGridBounds(gridKey) {
         const [x, y] = gridKey.split(',').map(Number);
         const p1 = L.point(x * this.GRID_CELL_SIZE, y * this.GRID_CELL_SIZE);
@@ -761,6 +823,8 @@ class SensmapApp {
         );
     }
 
+    // Retrieves the user's saved sensory sensitivity profile from local storage.
+    // 로컬 스토리지에서 사용자의 감각 민감도 프로필을 불러옵니다.
     getSensitivityProfile() {
         const saved = JSON.parse(localStorage.getItem('sensoryProfile') || '{}');
         return {
@@ -771,15 +835,21 @@ class SensmapApp {
         };
     }
 
+    // Saves the user's sensory sensitivity profile to local storage.
+    // 사용자의 감각 민감도 프로필을 로컬 스토리지에 저장합니다.
     saveSensitivityProfile(profile) {
         localStorage.setItem('sensoryProfile', JSON.stringify(profile));
     }
 
+    // Saves the current grid sensory data to local storage for persistence.
+    // 현재 그리드 감각 데이터를 로컬 스토리지에 저장하여 데이터를 유지합니다.
     saveGridData() {
         const dataToSave = Array.from(this.gridData.entries());
         localStorage.setItem('gridData', JSON.stringify(dataToSave));
     }
 
+    // Loads saved grid data and user sensory profile from local storage, then updates the UI and visualization accordingly.
+    // 저장된 그리드 데이터와 사용자 감각 프로필을 로컬 스토리지에서 불러와 UI와 시각화를 업데이트합니다.
     loadSavedData() {
         try {
             // Load grid data
@@ -806,6 +876,8 @@ class SensmapApp {
         }
     }
 
+    // Attempts to get the user's current location and center the map there, showing a success or error message accordingly.
+    // 사용자의 현재 위치를 받아 지도 중심을 이동시키고, 성공 또는 오류 메시지를 표시합니다.
     setupGeolocation() {
         if ('geolocation' in navigator) {
             navigator.geolocation.getCurrentPosition(
@@ -822,6 +894,8 @@ class SensmapApp {
         }
     }
 
+    // Converts a timestamp to a human-readable relative time string like "___ hours ago" in Korean.
+    // 타임스탬프를 받아 "몇 시간 전"과 같은 사람이 읽기 쉬운 상대 시간 문자열로 변환합니다.
     getTimeAgo(timestamp) {
         const now = Date.now();
         const diff = now - timestamp;
@@ -835,6 +909,8 @@ class SensmapApp {
         return '방금 전';
     }
 
+    // Displays a temporary toast message on the screen with a specific style based on the type.
+    // 화면에 특정 타입에 따라 스타일이 적용된 임시 토스트 메시지를 표시합니다.
     showToast(message, type = 'info') {
         const toast = document.getElementById('toast');
         toast.textContent = message;
