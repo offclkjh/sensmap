@@ -251,25 +251,25 @@ class SensmapApp {
             style: routeStyle
         }).addTo(this.map);
 
-        const distance = (route.distance / 1000).toFixed(1);
-        const duration = Math.round(route.duration / 60);
+        const distanceInKm = route.distance / 1000;
+        const estimatedDuration = Math.round((distanceInKm / 4.8) * 60); // 4.8 km/h is the average walking speed
 
         this.currentRoute.bindPopup(`
-            <div class="popup-header">
-                <div class="popup-title">최적 경로</div>
-                <div class="popup-subtitle">감각 친화적 경로</div>
-            </div>
-            <div style="padding: 12px 0;">
-                <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-                    <span>거리:</span>
-                    <strong>${distance}km</strong>
+                <div class="popup-header">
+                    <div class="popup-title">최적 경로</div>
+                    <div class="popup-subtitle">감각 친화적 경로</div>
                 </div>
-                <div style="display: flex; justify-content: space-between;">
-                    <span>예상 시간:</span>
-                    <strong>${duration}분</strong>
+                <div style="padding: 12px 0;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <span>거리:</span>
+                        <strong>${distanceInKm.toFixed(1)}km</strong>
+                    </div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <span>예상 시간:</span>
+                        <strong>${estimatedDuration}분</strong>
+                    </div>
                 </div>
-            </div>
-        `);
+            `);
 
         // Fit map to route
         this.map.fitBounds(this.currentRoute.getBounds(), { padding: [50, 50] });
