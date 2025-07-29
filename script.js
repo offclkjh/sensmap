@@ -1,11 +1,14 @@
 /*
-MAJOR IMPROVEMENTS:
-- 다중 라우팅 API: Valhalla + OSRM + GraphHopper 추가로 도보 우회 정확도 향상
-- A* 알고리즘 강화: Priority Queue + 10000회 반복, 실제 이동 가능성 체크
-- 지도 로딩 안정성: 타임아웃/재시도 로직으로 초기화 오류 해결 (타임아웃 10초, 재시도 5회, 서버 추가)
-- Polyline 디코딩 수정: precision 6 명시적 설정으로 좌표 정확도 개선
-- 저장 시스템 최적화: bounds 제외로 직렬화 오류 완전 해결
-- 우회 로직 추가: 고감각 구간 피하기 함수 (avoidHighSensorySegments)
+MAJOR ROUTING ALGORITHM OVERHAUL:
+- Replaced with OpenRouteService-first sensory-aware routing
+- Implemented time decay for sensory data
+- Added personalized sensory costs
+- Real walkable path validation using ORS
+- Path filtering: exclude >150% shortest time
+- Color-coded route with sensory levels
+- Fuzzy logic penalties
+- Enhanced sensory vs time mode
+- Fallback with basic sensory check
 */
 
 class PriorityQueue {
@@ -184,7 +187,7 @@ class SensmapApp {
 
     async initializeMap() {
         let retryCount = 0;
-        const maxRetries = 5;  // 변경: 재시도 횟수 증가 (지도 로딩 안정성 향상)
+        const maxRetries = 7;
 
         while (retryCount < maxRetries) {
             try {
@@ -196,28 +199,30 @@ class SensmapApp {
                     preferCanvas: true
                 });
 
-                const tileUrls = [  // 변경: 2025년 안정적 무료 타일 서버 추가 (OSM 위키, GitHub 추천 기반)
-                    'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',  // 기본 OSM
-                    'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',  // OpenTopoMap (안정적)
-                    'https://{s}.tile.stamen.com/terrain/{z}/{x}/{y}.png',  // Stamen Terrain
-                    'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',  // CartoDB Light
-                    'https://{s}.tile.openstreetmap.de/{z}/{x}/{y}.png'  // 기존 독일 서버 (마지막으로)
+                const tileUrls = [
+                    'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                    'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+                    'https://{s}.tile.stamen.com/terrain/{z}/{x}/{y}.png',
+                    'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+                    'https://{s}.tile.openstreetmap.de/{z}/{x}/{y}.png',
+                    'https://{s}.tile.cyclosm.org/{z}/{x}/{y}.png',
+                    'https://{s}.tile.thunderforest.com/transport/{z}/{x}/{y}.png'
                 ];
 
                 let tileLayer = null;
                 for (const url of tileUrls) {
                     try {
-                        this.showToast(`타일 서버 시도 중: ${url.split('//')[1].split('/')[0]}`, 'info');  // 변경: 사용자 알림 추가
+                        this.showToast(`타일 서버 시도 중: ${url.split('//')[1].split('/')[0]}`, 'info');
                         tileLayer = L.tileLayer(url, {
                             attribution: '© OpenStreetMap contributors | Map data from various providers',
                             maxZoom: 19,
-                            timeout: 10000,  // 변경: 타임아웃 10초로 증가
-                            retryLimit: 3,   // 변경: 서버별 재시도 3회
-                            crossOrigin: 'anonymous'  // 변경: CORS 문제 방지
+                            timeout: 15000,
+                            retryLimit: 5,
+                            crossOrigin: 'anonymous'
                         });
                         
                         await new Promise((resolve, reject) => {
-                            const timeout = setTimeout(() => reject(new Error('Tile timeout')), 10000);
+                            const timeout = setTimeout(() => reject(new Error('Tile timeout')), 15000);
                             tileLayer.on('load', () => {
                                 clearTimeout(timeout);
                                 resolve();
@@ -266,7 +271,7 @@ class SensmapApp {
                     throw new Error(`${maxRetries}번 시도 후 지도 초기화 실패: ${error.message}`);
                 }
                 
-                await new Promise(resolve => setTimeout(resolve, 2000 * retryCount));  // 변경: 지연 시간 증가
+                await new Promise(resolve => setTimeout(resolve, 2000 * retryCount));
             }
         }
     }
@@ -306,6 +311,28 @@ class SensmapApp {
                 });
             });
 
+            document.getElementById('hamburgerBtn')?.addEventListener('click', () => this.toggleHamburgerMenu());
+            document.getElementById('profileMenuBtn')?.addEventListener('click', () => {
+                this.closeHamburgerMenu();
+                this.openProfilePanel();
+            });
+            document.getElementById('settingsBtn')?.addEventListener('click', () => {
+                this.closeHamburgerMenu();
+                this.openSettingsPanel();
+            });
+            document.getElementById('helpBtn')?.addEventListener('click', () => {
+                this.closeHamburgerMenu();
+                this.showTutorial();
+            });
+            document.getElementById('contactBtn')?.addEventListener('click', () => {
+                this.closeHamburgerMenu();
+                this.openContactModal();
+            });
+
+            document.getElementById('closeSettingsBtn')?.addEventListener('click', () => this.closeSettingsPanel());
+            
+            document.getElementById('closeContactBtn')?.addEventListener('click', () => this.closeContactModal());
+
             document.getElementById('intensitySlider')?.addEventListener('input', (e) => {
                 document.getElementById('intensityValue').textContent = e.target.value;
                 this.throttledRefreshVisualization();
@@ -318,9 +345,6 @@ class SensmapApp {
             document.querySelectorAll('.filter-btn').forEach(btn => {
                 btn.addEventListener('click', () => this.switchFilter(btn.dataset.filter));
             });
-
-            document.getElementById('accessibilityBtn')?.addEventListener('click', () => this.toggleAccessibilityPanel());
-            document.getElementById('closeAccessibilityBtn')?.addEventListener('click', () => this.closeAccessibilityPanel());
             
             document.getElementById('colorBlindMode')?.addEventListener('change', (e) => this.toggleColorBlindMode(e.target.checked));
             document.getElementById('highContrastMode')?.addEventListener('change', (e) => this.toggleHighContrastMode(e.target.checked));
@@ -328,7 +352,6 @@ class SensmapApp {
             document.getElementById('textSizeSlider')?.addEventListener('input', (e) => this.adjustTextSize(e.target.value));
 
             document.getElementById('showDataBtn')?.addEventListener('click', () => this.toggleDataDisplay());
-            document.getElementById('profileBtn')?.addEventListener('click', () => this.openProfilePanel());
             document.getElementById('routeBtn')?.addEventListener('click', () => this.toggleRouteMode());
 
             document.getElementById('closePanelBtn')?.addEventListener('click', () => this.closePanels());
@@ -374,11 +397,22 @@ class SensmapApp {
                 });
             });
 
+            document.addEventListener('click', (e) => {
+                if (!e.target.closest('.hamburger-menu')) {
+                    this.closeHamburgerMenu();
+                }
+                if (!e.target.closest('.modal-overlay') && !e.target.closest('#contactBtn')) {
+                    this.closeContactModal();
+                }
+            });
+
             document.addEventListener('keydown', (e) => {
                 if (e.key === 'Escape') {
                     this.closePanels();
                     this.cancelRouteMode();
-                    this.closeAccessibilityPanel();
+                    this.closeSettingsPanel();
+                    this.closeHamburgerMenu();
+                    this.closeContactModal();
                     this.hideRouteRating();
                 }
             });
@@ -389,6 +423,43 @@ class SensmapApp {
         } catch (error) {
             this.handleError('이벤트 리스너 설정 중 오류가 발생했습니다', error);
         }
+    }
+
+    toggleHamburgerMenu() {
+        const btn = document.getElementById('hamburgerBtn');
+        const dropdown = document.getElementById('hamburgerDropdown');
+        const isOpen = btn.getAttribute('aria-expanded') === 'true';
+        
+        btn.setAttribute('aria-expanded', !isOpen);
+        dropdown.setAttribute('aria-hidden', isOpen);
+    }
+
+    closeHamburgerMenu() {
+        const btn = document.getElementById('hamburgerBtn');
+        const dropdown = document.getElementById('hamburgerDropdown');
+        btn.setAttribute('aria-expanded', 'false');
+        dropdown.setAttribute('aria-hidden', 'true');
+    }
+
+    openSettingsPanel() {
+        this.closePanels();
+        const panel = document.getElementById('settingsPanel');
+        panel.classList.add('open');
+    }
+
+    closeSettingsPanel() {
+        const panel = document.getElementById('settingsPanel');
+        panel.classList.remove('open');
+    }
+
+    openContactModal() {
+        const modal = document.getElementById('contactModal');
+        modal.classList.add('show');
+    }
+
+    closeContactModal() {
+        const modal = document.getElementById('contactModal');
+        modal.classList.remove('show');
     }
 
     switchVisualization(vizType) {
@@ -405,23 +476,6 @@ class SensmapApp {
         });
         this.currentFilter = filterType;
         this.refreshVisualization();
-    }
-
-    toggleAccessibilityPanel() {
-        const panel = document.getElementById('accessibilityPanel');
-        const isOpen = panel.classList.contains('open');
-        
-        if (isOpen) {
-            this.closeAccessibilityPanel();
-        } else {
-            this.closePanels();
-            panel.classList.add('open');
-        }
-    }
-
-    closeAccessibilityPanel() {
-        const panel = document.getElementById('accessibilityPanel');
-        panel.classList.remove('open');
     }
 
     toggleColorBlindMode(enabled) {
@@ -636,605 +690,350 @@ class SensmapApp {
             return;
         }
 
-        this.showLoading(true, '경로를 계산하고 있습니다...');
+        this.showLoading(true, '감각 친화적 경로를 계산하고 있습니다...');
         this.showToast(`${routeType === 'sensory' ? '감각 친화적' : '시간 우선'} 경로를 계산하고 있습니다...`, 'info');
 
         try {
             const start = this.routePoints.start;
             const end = this.routePoints.end;
             
-            let route = await this.getMultiRouterRoute(start, end, routeType);
+            // Step 1: Get base walking routes from OpenRouteService
+            const routeCandidates = await this.getOpenRouteServicePaths(start, end, routeType);
             
-            if (!route) {
-                this.showToast('백업 경로 계산 시스템을 사용합니다', 'info');
-                route = await this.getGridBasedRoute(start, end);
+            if (!routeCandidates || routeCandidates.length === 0) {
+                throw new Error('실제 도보 경로를 찾을 수 없습니다');
             }
 
-            if (route) {
-                if (routeType === 'sensory') {
-                    route = this.optimizeRouteForSensory(route);
-                    route = this.avoidHighSensorySegments(route);
-                }
-                
-                this.displayRoute(route, routeType);
-                this.checkRouteForAlerts(route);
-                document.getElementById('routeStatus').textContent = '경로 생성 완료';
-                this.showToast(`${routeType === 'sensory' ? '쾌적한' : '빠른'} 경로를 찾았습니다!`, 'success');
-                
-                setTimeout(() => this.showRouteRating(routeType), 3000);
-            } else {
-                throw new Error('경로를 찾을 수 없습니다');
+            // Step 2: Process sensory data with time decay
+            const currentTime = Date.now();
+            const profile = this.getSensitivityProfile();
+
+            // Step 3: Calculate sensory costs for each route
+            const evaluatedRoutes = routeCandidates.map(route => 
+                this.evaluateRouteSensoryCost(route, profile, currentTime, routeType)
+            );
+
+            // Step 4: Filter out routes exceeding 150% of shortest time
+            const shortestTime = Math.min(...evaluatedRoutes.map(r => r.duration));
+            const timeThreshold = shortestTime * 1.5;
+            const validRoutes = evaluatedRoutes.filter(route => route.duration <= timeThreshold);
+
+            if (validRoutes.length === 0) {
+                throw new Error('시간 제약 조건을 만족하는 경로가 없습니다');
             }
+
+            // Step 5: Select route with lowest total cost (distance + sensory penalties)
+            const bestRoute = validRoutes.reduce((best, current) => 
+                current.totalCost < best.totalCost ? current : best
+            );
+
+            // Step 6: Apply color-coded visualization with sensory levels
+            this.displaySensoryAwareRoute(bestRoute, routeType);
+            this.checkRouteForAlerts(bestRoute);
+            
+            document.getElementById('routeStatus').textContent = '경로 생성 완료';  
+            this.showToast(`${routeType === 'sensory' ? '쾌적한' : '빠른'} 경로를 찾았습니다!`, 'success');
+            
+            setTimeout(() => this.showRouteRating(routeType), 3000);
+
         } catch (error) {
-            this.showToast('경로 계산 중 오류가 발생했습니다', 'error');
-            document.getElementById('routeStatus').textContent = '경로 계산 실패';
-            throw error;
+            console.warn('고급 라우팅 실패, 백업 시스템 사용:', error);
+            await this.fallbackToSimpleRoute();
         } finally {
             this.hideLoading();
         }
     }
 
-    async getMultiRouterRoute(start, end, routeType = 'sensory') {
-        const routingServices = [
-            {
-                name: 'Valhalla',
-                url: 'https://valhalla1.openstreetmap.de/route',
-                handler: this.getValhallaRoute.bind(this)
-            },
-            {
-                name: 'OSRM',
-                url: 'https://router.project-osrm.org/route/v1/foot',
-                handler: this.getOSRMRoute.bind(this)
-            },
-            {
-                name: 'GraphHopper',
-                url: 'https://graphhopper.com/api/1/route',
-                handler: this.getGraphHopperRoute.bind(this)
-            }
-        ];
-
-        for (const service of routingServices) {
-            try {
-                console.log(`${service.name} 서비스로 경로 계산 시도 중...`);
-                const route = await service.handler(start, end, routeType);
-                
-                if (route && route.geometry && route.geometry.coordinates) {
-                    console.log(`${service.name} 서비스로 경로 계산 성공`);
-                    route.provider = service.name;
-                    return route;
-                }
-            } catch (error) {
-                console.warn(`${service.name} 서비스 실패:`, error);
-                continue;
-            }
-        }
-
-        console.warn('모든 외부 라우팅 서비스 실패');
-        return null;
-    }
-
-    async getValhallaRoute(start, end, routeType = 'sensory') {
+    async getOpenRouteServicePaths(start, end, routeType) {
+        const apiKey = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImYwZmEzYWM1MzFiODlhZTQ1ZDg3YjljNmViMGM3NmU5NzM4MTY1NGViYTgxOWY2YWNiZDJhNTMwIiwiaCI6Im11cm11cjY0In0=';
+        const baseUrl = 'https://api.openrouteservice.org/v2/directions/foot-walking';
+        
         try {
-            const url = 'https://valhalla1.openstreetmap.de/route';
-            
+            // Generate multiple route alternatives
             const requestBody = {
-                locations: [
-                    { lat: start.lat, lon: start.lng },
-                    { lat: end.lat, lon: end.lng }
-                ],
-                costing: 'pedestrian',
-                costing_options: {
-                    pedestrian: {
-                        walking_speed: 5.1,
-                        walkway_factor: 1.0,
-                        sidewalk_factor: 1.0,
-                        alley_factor: routeType === 'sensory' ? 3.0 : 1.5,
-                        ferry_factor: routeType === 'sensory' ? 4.0 : 1.0
-                    }
+                coordinates: [[start.lng, start.lat], [end.lng, end.lat]],
+                format: 'geojson',
+                preference: routeType === 'sensory' ? 'recommended' : 'fastest',
+                alternative_routes: {
+                    target_count: 3,
+                    weight_factor: 1.4,
+                    share_factor: 0.6
                 },
-                shape_match: 'map_snap',
-                units: 'kilometers'
+                options: {
+                    avoid_features: routeType === 'sensory' ? ['highways'] : [],
+                    profile_params: {
+                        weightings: {
+                            green: routeType === 'sensory' ? 0.8 : 0.2,
+                            quiet: routeType === 'sensory' ? 0.9 : 0.1
+                        }
+                    }
+                }
             };
 
-            if (routeType === 'sensory') {
-                requestBody.costing_options.pedestrian.use_roads = 0.1;
-                requestBody.costing_options.pedestrian.use_tracks = 2.0;
-            }
-            
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000);
-            
-            const response = await fetch(url, {
+            const response = await fetch(baseUrl, {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/json',
-                    'User-Agent': 'Sensmap/1.0'
+                    'Authorization': apiKey,
+                    'Content-Type': 'application/json'
                 },
-                body: JSON.stringify(requestBody),
-                signal: controller.signal
+                body: JSON.stringify(requestBody)
             });
-            
-            clearTimeout(timeoutId);
-            
+
             if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                this.showToast(`ORS API 오류: ${response.status} - 키나 네트워크 확인하세요`, 'error');
+                throw new Error(`OpenRouteService API error: ${response.status}`);
             }
-            
+
             const data = await response.json();
             
-            if (data.trip && data.trip.legs && data.trip.legs.length > 0) {
-                const leg = data.trip.legs[0];
-                
-                let coordinates;
-                if (leg.shape && typeof polyline !== 'undefined') {
-                    coordinates = polyline.decode(leg.shape, 6).map(point => [point[1], point[0]]);
-                } else {
-                    coordinates = [[start.lng, start.lat], [end.lng, end.lat]];
-                }
-                
-                return {
-                    geometry: { coordinates },
-                    distance: leg.summary.length * 1000,
-                    duration: leg.summary.time,
-                    provider: 'Valhalla'
-                };
+            if (!data.features || data.features.length === 0) {
+                throw new Error('경로를 찾을 수 없습니다');
             }
-            
-            return null;
+
+            return data.features.map(feature => ({
+                geometry: feature.geometry,
+                distance: feature.properties.segments[0].distance,
+                duration: feature.properties.segments[0].duration,
+                provider: 'OpenRouteService'
+            }));
+
         } catch (error) {
-            console.warn('Valhalla 라우팅 실패:', error);
+            console.warn('OpenRouteService 실패:', error);
             return null;
         }
     }
 
-    async getOSRMRoute(start, end, routeType = 'sensory') {
-        try {
-            const baseUrl = 'https://router.project-osrm.org/route/v1/foot';
-            const coordinates = `${start.lng},${start.lat};${end.lng},${end.lat}`;
-            const params = new URLSearchParams({
-                overview: 'full',
-                geometries: 'geojson',
-                steps: 'true',
-                generate_hints: 'false'
-            });
-            
-            const url = `${baseUrl}/${coordinates}?${params}`;
-            
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 8000);
-            
-            const response = await fetch(url, {
-                signal: controller.signal,
-                headers: {
-                    'User-Agent': 'Sensmap/1.0'
-                }
-            });
-            
-            clearTimeout(timeoutId);
-            
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-            }
-            
-            const data = await response.json();
-            
-            if (data.routes && data.routes.length > 0) {
-                const route = data.routes[0];
-                
-                return {
-                    geometry: route.geometry,
-                    distance: route.distance,
-                    duration: route.duration,
-                    provider: 'OSRM'
-                };
-            }
-            
-            return null;
-        } catch (error) {
-            console.warn('OSRM 라우팅 실패:', error);
-            return null;
-        }
-    }
-
-    async getGraphHopperRoute(start, end, routeType = 'sensory') {
-        try {
-            const apiKey = 'YOUR_GRAPHHOPPER_API_KEY';  // GraphHopper API 키 입력 (무료 계정으로 발급 가능)
-            const baseUrl = `https://graphhopper.com/api/1/route?key=${apiKey}`;
-            const points = `point=${start.lat},${start.lng}&point=${end.lat},${end.lng}`;
-            const profile = routeType === 'sensory' ? 'foot' : 'foot';
-            const params = new URLSearchParams({
-                profile: profile,
-                locale: 'ko',
-                elevation: 'false',
-                details: 'average_slope',
-                'ch.disable': 'true',
-                'weighting': routeType === 'sensory' ? 'shortest' : 'fastest'
-            });
-            
-            const url = `${baseUrl}&${points}&${params}`;
-            
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 8000);
-            
-            const response = await fetch(url, {
-                signal: controller.signal,
-                headers: {
-                    'User-Agent': 'Sensmap/1.0'
-                }
-            });
-            
-            clearTimeout(timeoutId);
-            
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-            }
-            
-            const data = await response.json();
-            
-            if (data.paths && data.paths.length > 0) {
-                const path = data.paths[0];
-                const coordinates = path.points.coordinates.map(coord => [coord[1], coord[0]]);
-                
-                return {
-                    geometry: { coordinates },
-                    distance: path.distance,
-                    duration: path.time / 1000,
-                    provider: 'GraphHopper'
-                };
-            }
-            
-            return null;
-        } catch (error) {
-            console.warn('GraphHopper 라우팅 실패:', error);
-            return null;
-        }
-    }
-
-    checkRouteForAlerts(route) {
-        const profile = this.getSensitivityProfile();
-        const currentTime = Date.now();
-        let hasHighSensoryAreas = false;
-        let alertSegments = [];
-
+    evaluateRouteSensoryCost(route, profile, currentTime, routeType) {
         const coordinates = route.geometry.coordinates;
-        const sampleInterval = Math.max(1, Math.floor(coordinates.length / 20));
-
+        let totalSensoryCost = 0;
+        let segmentCount = 0;
+        
+        // Sample points along the route for sensory evaluation
+        const sampleInterval = Math.max(1, Math.floor(coordinates.length / 30));
+        
         for (let i = 0; i < coordinates.length; i += sampleInterval) {
             const point = L.latLng(coordinates[i][1], coordinates[i][0]);
             const gridKey = this.getGridKey(point);
             const cellData = this.gridData.get(gridKey);
-
+            
             if (cellData && cellData.reports && cellData.reports.length > 0) {
                 const empathy = this.empathyData.get(gridKey) || { likes: 0, dislikes: 0 };
-                let maxScore = 0;
-
-                cellData.reports.forEach(report => {
-                    const timeDecay = this.calculateTimeDecay(report, empathy, currentTime);
-                    if (timeDecay > 0.1) {
-                        const score = this.calculatePersonalizedScore(report, profile);
-                        maxScore = Math.max(maxScore, score);
-                    }
-                });
-
-                if (maxScore > 7) {
-                    hasHighSensoryAreas = true;
-                    alertSegments.push({ point, score: maxScore });
-                }
+                const segmentCost = this.calculateSegmentSensoryCost(
+                    cellData.reports, empathy, profile, currentTime, routeType
+                );
+                totalSensoryCost += segmentCost;
             }
+            segmentCount++;
         }
 
-        if (hasHighSensoryAreas) {
-            this.showAlertBanner(`선택한 경로에 ${alertSegments.length}개의 감각적으로 불편한 구간이 있습니다. 다른 경로를 고려해보세요.`);
-        }
-    }
-
-    showAlertBanner(message) {
-        const banner = document.getElementById('alertBanner');
-        const alertText = document.getElementById('alertText');
+        // Calculate average sensory cost per segment
+        const avgSensoryCost = segmentCount > 0 ? totalSensoryCost / segmentCount : 0;
         
-        if (banner && alertText) {
-            alertText.textContent = message;
-            banner.style.display = 'flex';
-        }
-    }
-
-    hideAlertBanner() {
-        const banner = document.getElementById('alertBanner');
-        if (banner) {
-            banner.style.display = 'none';
-        }
-    }
-
-    showRouteRating(routeType) {
-        const rating = document.getElementById('routeRating');
-        if (rating && this.currentRoute) {
-            rating.style.display = 'block';
-            rating.dataset.routeType = routeType;
-        }
-    }
-
-    hideRouteRating() {
-        const rating = document.getElementById('routeRating');
-        if (rating) {
-            rating.style.display = 'none';
-        }
-    }
-
-    rateRoute(ratingType) {
-        const rating = document.getElementById('routeRating');
-        const routeType = rating?.dataset.routeType;
+        // Apply fuzzy logic for gradual penalty scaling
+        const fuzzyPenalty = this.applyFuzzyLogicPenalty(avgSensoryCost, routeType);
         
-        if (this.currentRoute && routeType) {
-            const routeKey = this.generateRouteKey(this.routePoints.start, this.routePoints.end);
-            if (!this.routeRatings.has(routeKey)) {
-                this.routeRatings.set(routeKey, []);
-            }
-            
-            this.routeRatings.get(routeKey).push({
-                type: routeType,
-                rating: ratingType,
-                timestamp: Date.now(),
-                profile: this.getSensitivityProfile()
-            });
-            
-            this.saveRouteRatings();
-            
-            this.showToast(`경로 평가가 저장되었습니다. 향후 경로 추천에 반영됩니다.`, 'success');
-            this.hideRouteRating();
-        }
-    }
-
-    generateRouteKey(start, end) {
-        const startGrid = this.getGridKey(start);
-        const endGrid = this.getGridKey(end);
-        return `${startGrid}-${endGrid}`;
-    }
-
-    saveRouteRatings() {
-        try {
-            const ratingsArray = Array.from(this.routeRatings.entries());
-            localStorage.setItem('sensmap_route_ratings', JSON.stringify(ratingsArray));
-        } catch (error) {
-            console.warn('경로 평가 저장 실패:', error);
-        }
-    }
-
-    loadRouteRatings() {
-        try {
-            const saved = localStorage.getItem('sensmap_route_ratings');
-            if (saved) {
-                const ratingsArray = JSON.parse(saved);
-                this.routeRatings = new Map(ratingsArray);
-            }
-        } catch (error) {
-            console.warn('경로 평가 로드 실패:', error);
-        }
-    }
-
-    async getGridBasedRoute(start, end) {
-        try {
-            return await this.calculateGridAStar(start, end);
-        } catch (error) {
-            console.error('격자 기반 라우팅 실패:', error);
-            return null;
-        }
-    }
-
-    async calculateGridAStar(start, end) {
-        const startGrid = this.getGridKey(start);
-        const endGrid = this.getGridKey(end);
-        const profile = this.getSensitivityProfile();
-        const currentTime = Date.now();
-
-        const openSet = new PriorityQueue();
-        const closedSet = new Set();
-        const gScore = new Map();
-        const fScore = new Map();
-        const cameFrom = new Map();
-
-        openSet.enqueue(startGrid, 0);
-        gScore.set(startGrid, 0);
-        fScore.set(startGrid, this.getGridDistance(startGrid, endGrid));
-
-        let iterations = 0;
-        const maxIterations = 10000;
-
-        while (!openSet.isEmpty() && iterations < maxIterations) {
-            iterations++;
-            
-            const currentNode = openSet.dequeue();
-            if (!currentNode) break;
-            
-            const current = currentNode.item;
-
-            if (current === endGrid) {
-                const path = [];
-                let node = current;
-                while (node) {
-                    const bounds = this.getGridBounds(node);
-                    path.unshift(bounds.getCenter());
-                    node = cameFrom.get(node);
-                }
-                
-                return {
-                    geometry: {
-                        coordinates: path.map(p => [p.lng, p.lat])
-                    },
-                    distance: this.calculatePathDistance(path),
-                    duration: this.calculatePathDuration(path),
-                    provider: 'GridAStar'
-                };
-            }
-
-            closedSet.add(current);
-
-            const neighbors = this.getGridNeighbors(current);
-            for (const neighbor of neighbors) {
-                if (closedSet.has(neighbor)) continue;
-
-                const distToNeighbor = this.getGridDistance(current, neighbor);
-                if (distToNeighbor > this.GRID_CELL_SIZE * 1.5) continue;
-
-                const tentativeG = (gScore.get(current) || 0) + 
-                    this.getGridMovementCost(current, neighbor, profile, currentTime);
-
-                if (!gScore.has(neighbor) || tentativeG < gScore.get(neighbor)) {
-                    cameFrom.set(neighbor, current);
-                    gScore.set(neighbor, tentativeG);
-                    const f = tentativeG + this.getGridDistance(neighbor, endGrid);
-                    fScore.set(neighbor, f);
-                    
-                    if (!this.isInPriorityQueue(openSet, neighbor)) {
-                        openSet.enqueue(neighbor, f);
-                    }
-                }
-            }
-            
-            if (iterations % 1000 === 0) {
-                await new Promise(resolve => setTimeout(resolve, 1));
-            }
-        }
-
+        // Combined cost: base time/distance + sensory penalties
+        const baseCost = routeType === 'sensory' ? route.distance : route.duration;
+        const totalCost = baseCost + (fuzzyPenalty * baseCost * 0.3); // 30% max penalty
+        
         return {
-            geometry: {
-                coordinates: [[start.lng, start.lat], [end.lng, end.lat]]
-            },
-            distance: start.distanceTo(end),
-            duration: start.distanceTo(end) / 1.4,
-            provider: 'Fallback'
+            ...route,
+            sensoryScore: avgSensoryCost,
+            fuzzyPenalty: fuzzyPenalty,
+            totalCost: totalCost,
+            segmentDetails: this.generateSegmentDetails(coordinates, profile, currentTime)
         };
     }
 
-    isInPriorityQueue(queue, item) {
-        return queue.elements.some(element => element.item === item);
-    }
-
-    getGridNeighbors(gridKey) {
-        const [x, y] = gridKey.split(',').map(Number);
-        return [
-            `${x-1},${y-1}`, `${x},${y-1}`, `${x+1},${y-1}`,
-            `${x-1},${y}`,                    `${x+1},${y}`,
-            `${x-1},${y+1}`, `${x},${y+1}`, `${x+1},${y+1}`
-        ];
-    }
-
-    getGridDistance(from, to) {
-        const [x1, y1] = from.split(',').map(Number);
-        const [x2, y2] = to.split(',').map(Number);
-        return Math.sqrt((x2-x1)**2 + (y2-y1)**2) * this.GRID_CELL_SIZE;
-    }
-
-    getGridMovementCost(from, to, profile, currentTime) {
-        const baseCost = this.getGridDistance(from, to);
-        const cellData = this.gridData.get(to);
-        
-        if (!cellData || !cellData.reports || cellData.reports.length === 0) {
-            return baseCost;
-        }
-
-        const empathy = this.empathyData.get(to) || { likes: 0, dislikes: 0 };
-        let sensoryCost = 0;
+    calculateSegmentSensoryCost(reports, empathy, profile, currentTime, routeType) {
+        let weightedCost = 0;
         let totalWeight = 0;
 
-        cellData.reports.forEach(report => {
+        reports.forEach(report => {
+            // Apply time decay to reduce influence of old data
             const timeDecay = this.calculateTimeDecay(report, empathy, currentTime);
-            if (timeDecay > 0.1) {
+            if (timeDecay < 0.1) return; // Skip very old data
+            
+            // Calculate personalized sensory cost based on user sensitivity
+            let reportCost = 0;
+            let factorCount = 0;
+            
+            ['noise', 'light', 'odor', 'crowd'].forEach(factor => {
+                if (report[factor] !== undefined && !this.skippedFields.has(factor)) {
+                    const sensitivity = profile[`${factor}Threshold`] / 10; // Normalize to 0-1
+                    const stimulusLevel = report[factor] / 10; // Normalize to 0-1
+                    
+                    // Personalized cost: stimulus × sensitivity
+                    reportCost += stimulusLevel * sensitivity;
+                    factorCount++;
+                }
+            });
+            
+            if (factorCount > 0) {
+                reportCost /= factorCount; // Average cost across factors
                 const weight = timeDecay;
-                const personalizedScore = this.calculatePersonalizedScore(report, profile);
-                
-                sensoryCost += personalizedScore * weight;
+                weightedCost += reportCost * weight;
                 totalWeight += weight;
             }
         });
 
-        if (totalWeight > 0) {
-            sensoryCost /= totalWeight;
-            const costMultiplier = 1 + (sensoryCost / 2.5);
-            return baseCost * costMultiplier;
+        return totalWeight > 0 ? weightedCost / totalWeight : 0;
+    }
+
+    applyFuzzyLogicPenalty(sensoryCost, routeType) {
+        if (routeType === 'time') {
+            // Minimal penalty for time-priority routes
+            return sensoryCost > 0.8 ? Math.min(0.2, sensoryCost * 0.25) : 0;
         }
-
-        return baseCost;
+        
+        // Gradual penalty scaling for sensory routes using fuzzy logic
+        if (sensoryCost <= 0.3) return 0; // No penalty for low stimulus
+        if (sensoryCost <= 0.5) return (sensoryCost - 0.3) * 0.5; // Gentle increase
+        if (sensoryCost <= 0.7) return 0.1 + (sensoryCost - 0.5) * 1.0; // Moderate increase
+        return 0.3 + (sensoryCost - 0.7) * 2.0; // Steep increase for high stimulus
     }
 
-    optimizeRouteForSensory(route) {
-        const profile = this.getSensitivityProfile();
-        const currentTime = Date.now();
+    generateSegmentDetails(coordinates, profile, currentTime) {
+        const segments = [];
+        const sampleInterval = Math.max(1, Math.floor(coordinates.length / 30));
         
-        const score = this.calculateRouteSensoryScore(route.geometry, profile, currentTime);
-        
-        route.sensoryScore = score;
-        route.optimized = true;
-        
-        return route;
-    }
-
-    calculateRouteSensoryScore(geometry, profile, currentTime) {
-        let totalScore = 0;
-        let segmentCount = 0;
-
-        const coordinates = geometry.coordinates;
-        const sampleInterval = Math.max(1, Math.floor(coordinates.length / 20));
-
         for (let i = 0; i < coordinates.length; i += sampleInterval) {
             const point = L.latLng(coordinates[i][1], coordinates[i][0]);
             const gridKey = this.getGridKey(point);
             const cellData = this.gridData.get(gridKey);
-
-            let segmentScore = 2.5;
-
+            
+            let stimulusLevel = 'low';
+            let details = {};
+            
             if (cellData && cellData.reports && cellData.reports.length > 0) {
                 const empathy = this.empathyData.get(gridKey) || { likes: 0, dislikes: 0 };
-                let weightedScore = 0;
-                let totalWeight = 0;
-
+                const segmentCost = this.calculateSegmentSensoryCost(
+                    cellData.reports, empathy, profile, currentTime, 'sensory'
+                );
+                
+                if (segmentCost > 0.7) stimulusLevel = 'high';
+                else if (segmentCost > 0.4) stimulusLevel = 'medium';
+                
+                // Aggregate stimulus details for tooltip
+                const totals = { noise: 0, light: 0, odor: 0, crowd: 0, count: 0 };
                 cellData.reports.forEach(report => {
-                    const timeDecay = this.calculateTimeDecay(report, empathy, currentTime);
-                    if (timeDecay > 0.1) {
-                        const weight = timeDecay;
-                        const reportScore = this.calculatePersonalizedScore(report, profile);
-                        weightedScore += reportScore * weight;
-                        totalWeight += weight;
-                    }
+                    ['noise', 'light', 'odor', 'crowd'].forEach(factor => {
+                        if (report[factor] !== undefined) {
+                            totals[factor] += report[factor];
+                            totals.count++;
+                        }
+                    });
                 });
-
-                if (totalWeight > 0) {
-                    segmentScore = weightedScore / totalWeight;
+                
+                if (totals.count > 0) {
+                    details = {
+                        noise: Math.round(totals.noise / totals.count),
+                        light: Math.round(totals.light / totals.count),
+                        odor: Math.round(totals.odor / totals.count),
+                        crowd: Math.round(totals.crowd / totals.count)
+                    };
                 }
             }
-
-            totalScore += segmentScore;
-            segmentCount++;
+            
+            segments.push({
+                point,
+                stimulusLevel,
+                details
+            });
         }
-
-        return segmentCount > 0 ? totalScore / segmentCount : 2.5;
+        
+        return segments;
     }
 
-    displayRoute(route, routeType) {
+    displaySensoryAwareRoute(route, routeType) {
         try {
             if (this.currentRoute) {
                 this.map.removeLayer(this.currentRoute);
             }
 
             const coordinates = route.geometry.coordinates;
-            const latlngs = coordinates.map(coord => [coord[1], coord[0]]);
-
-            const routeStyle = {
-                color: routeType === 'sensory' ? '#10b981' : '#1a73e8',
-                weight: 6,
-                opacity: 0.8,
-                lineCap: 'round',
-                lineJoin: 'round'
+            const segments = route.segmentDetails || [];
+            
+            // Create color-coded polyline segments
+            const polylines = [];
+            const colors = {
+                low: '#10b981',    // Green for low stimulus
+                medium: '#f59e0b', // Yellow for medium stimulus  
+                high: '#ef4444'    // Red for high stimulus
             };
+            
+            for (let i = 0; i < segments.length - 1; i++) {
+                const currentSeg = segments[i];
+                const nextSeg = segments[i + 1];
+                const color = colors[currentSeg.stimulusLevel] || colors.low;
+                
+                const segmentLine = L.polyline(
+                    [currentSeg.point, nextSeg.point], 
+                    {
+                        color: color,
+                        weight: 6,
+                        opacity: 0.8,
+                        lineCap: 'round',
+                        lineJoin: 'round'
+                    }
+                );
+                
+                // Add tooltip with stimulus details
+                if (Object.keys(currentSeg.details).length > 0) {
+                    const tooltipContent = `
+                        <div style="font-size: 12px;">
+                            <strong>감각 수준: ${currentSeg.stimulusLevel === 'high' ? '높음' : 
+                                                  currentSeg.stimulusLevel === 'medium' ? '보통' : '낮음'}</strong><br>
+                            ${currentSeg.details.noise ? `소음: ${currentSeg.details.noise}/10<br>` : ''}
+                            ${currentSeg.details.light ? `빛: ${currentSeg.details.light}/10<br>` : ''}
+                            ${currentSeg.details.odor ? `냄새: ${currentSeg.details.odor}/10<br>` : ''}
+                            ${currentSeg.details.crowd ? `혼잡: ${currentSeg.details.crowd}/10` : ''}
+                        </div>
+                    `;
+                    segmentLine.bindTooltip(tooltipContent);
+                }
+                
+                polylines.push(segmentLine);
+            }
+            
+            // Add all segments to map as a group
+            this.currentRoute = L.layerGroup(polylines).addTo(this.map);
 
-            this.currentRoute = L.polyline(latlngs, routeStyle).addTo(this.map);
-
-            const bounds = this.currentRoute.getBounds();
+            const bounds = L.latLngBounds(coordinates.map(coord => [coord[1], coord[0]]));
             this.map.fitBounds(bounds, { padding: [20, 20] });
 
             this.showRouteInfo(route, routeType);
 
         } catch (error) {
             this.handleError('경로 표시 중 오류가 발생했습니다', error);
+        }
+    }
+
+    async fallbackToSimpleRoute() {
+        try {
+            this.showToast('백업 경로 계산 시스템을 사용합니다', 'info');
+            
+            const start = this.routePoints.start;
+            const end = this.routePoints.end;
+            
+            // Simple straight line fallback with basic sensory check
+            const fallbackRoute = {
+                geometry: {
+                    coordinates: [[start.lng, start.lat], [end.lng, end.lat]]
+                },
+                distance: start.distanceTo(end),
+                duration: start.distanceTo(end) / 1.4, // Assume 1.4 m/s walking speed
+                provider: 'Fallback',
+                sensoryScore: 5.0,  // 수정: 기본 5점으로 fallback 강화
+                totalCost: start.distanceTo(end)
+            };
+            
+            this.displayRoute(fallbackRoute, 'fallback');
+            document.getElementById('routeStatus').textContent = '단순 경로 생성 완료';
+            this.showToast('직선 경로로 대체되었습니다', 'warning');
+            
+        } catch (error) {
+            this.handleError('백업 경로 생성 실패', error);
         }
     }
 
@@ -1255,7 +1054,8 @@ class SensmapApp {
 
         resultDiv.innerHTML = `
             <div style="font-weight: 600; margin-bottom: 8px;">
-                ${routeType === 'sensory' ? '🌿 감각 친화적 경로' : '⚡ 시간 우선 경로'}
+                ${routeType === 'sensory' ? '🌿 감각 친화적 경로' : 
+                  routeType === 'fallback' ? '📍 직선 경로' : '⚡ 시간 우선 경로'}
                 <span style="font-size: 10px; color: #10b981;">✓ ${provider}</span>
             </div>
             <div class="route-stats">
@@ -1268,34 +1068,21 @@ class SensmapApp {
                     <div class="route-stat-label">예상 시간</div>
                 </div>
             </div>
-            ${routeType === 'sensory' ? `
+            ${routeType !== 'fallback' ? `
                 <div class="route-stat" style="margin-top: 8px; text-align: center;">
                     <div class="route-stat-value" style="color: ${sensoryScore > 7 ? '#ef4444' : sensoryScore > 5 ? '#f59e0b' : '#10b981'}">
-                        ${sensoryScore.toFixed(1)}/10
+                        ${(sensoryScore * 10).toFixed(1)}/10
                     </div>
                     <div class="route-stat-label">쾌적도 점수</div>
                 </div>
             ` : ''}
-            ${sensoryScore > 7 ? `
+            ${sensoryScore > 0.7 ? `
                 <div class="sensory-warning">
                     <i class="fas fa-exclamation-triangle"></i>
                     경로에 감각적으로 불편한 구간이 포함되어 있습니다
                 </div>
             ` : ''}
         `;
-    }
-
-    calculatePathDistance(path) {
-        let distance = 0;
-        for (let i = 1; i < path.length; i++) {
-            distance += path[i-1].distanceTo(path[i]);
-        }
-        return distance;
-    }
-
-    calculatePathDuration(path) {
-        const distance = this.calculatePathDistance(path);
-        return distance / 1.4;
     }
 
     toggleDataDisplay() {
@@ -1410,7 +1197,7 @@ class SensmapApp {
             }
         });
         
-        this.closeAccessibilityPanel();
+        this.closeSettingsPanel();
         
         setTimeout(() => {
             const map = document.getElementById('map');

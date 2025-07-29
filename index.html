@@ -74,9 +74,45 @@
 
     <!-- Header Controls -->
     <div class="header-controls">
-        <div class="logo">
-            <i class="fas fa-map-marked-alt"></i>
-            Sensmap
+        <div class="header-left">
+            <div class="logo">
+                <i class="fas fa-map-marked-alt"></i>
+                Sensmap
+            </div>
+            
+            <!-- Hamburger Menu -->
+            <div class="hamburger-menu">
+                <button class="hamburger-btn" id="hamburgerBtn" aria-label="메뉴 열기" aria-expanded="false">
+                    <i class="fas fa-bars"></i>
+                </button>
+                <div class="hamburger-dropdown" id="hamburgerDropdown" aria-hidden="true">
+                    <div class="menu-item">
+                        <button class="menu-btn" id="profileMenuBtn">
+                            <i class="fas fa-user-cog"></i>
+                            <span>감각 프로필</span>
+                        </button>
+                    </div>
+                    <div class="menu-separator"></div>
+                    <div class="menu-item">
+                        <button class="menu-btn" id="settingsBtn">
+                            <i class="fas fa-cog"></i>
+                            <span>설정</span>
+                        </button>
+                    </div>
+                    <div class="menu-item">
+                        <button class="menu-btn" id="helpBtn">
+                            <i class="fas fa-question-circle"></i>
+                            <span>도움말</span>
+                        </button>
+                    </div>
+                    <div class="menu-item">
+                        <button class="menu-btn" id="contactBtn">
+                            <i class="fas fa-envelope"></i>
+                            <span>문의하기</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
         </div>
         
         <div class="header-center">
@@ -117,14 +153,8 @@
         </div>
         
         <div class="header-right">
-            <button class="icon-btn" id="accessibilityBtn" title="접근성 옵션" aria-label="접근성 설정">
-                <i class="fas fa-universal-access"></i>
-            </button>
             <button class="icon-btn active" id="showDataBtn" title="데이터 표시/숨김" aria-label="데이터 표시 토글" aria-pressed="true">
                 <i class="fas fa-eye"></i>
-            </button>
-            <button class="icon-btn" id="profileBtn" title="감각 프로필" aria-label="감각 프로필 설정">
-                <i class="fas fa-user-cog"></i>
             </button>
             <button class="icon-btn" id="routeBtn" title="경로 찾기" aria-label="경로 찾기 모드">
                 <i class="fas fa-route"></i>
@@ -132,36 +162,64 @@
         </div>
     </div>
 
-    <!-- Accessibility Panel -->
-    <div class="accessibility-panel" id="accessibilityPanel">
+    <!-- Settings Panel (moved from accessibility panel) -->
+    <div class="settings-panel" id="settingsPanel">
         <div class="panel-header">
-            <div class="panel-title">접근성 설정</div>
-            <button class="close-btn" id="closeAccessibilityBtn">
+            <div class="panel-title">설정</div>
+            <button class="close-btn" id="closeSettingsBtn">
                 <i class="fas fa-times"></i>
             </button>
         </div>
         <div class="panel-content">
-            <div class="accessibility-option">
-                <label>
-                    <input type="checkbox" id="colorBlindMode">
-                    <span>색맹 친화 모드</span>
-                </label>
+            <div class="settings-section">
+                <h3>접근성 옵션</h3>
+                <div class="setting-option">
+                    <label>
+                        <input type="checkbox" id="colorBlindMode">
+                        <span>색맹 친화 모드</span>
+                    </label>
+                </div>
+                <div class="setting-option">
+                    <label>
+                        <input type="checkbox" id="highContrastMode">
+                        <span>고대비 모드</span>
+                    </label>
+                </div>
+                <div class="setting-option">
+                    <label>
+                        <input type="checkbox" id="reducedMotionMode">
+                        <span>애니메이션 줄이기</span>
+                    </label>
+                </div>
+                <div class="setting-option">
+                    <label for="textSizeSlider">텍스트 크기</label>
+                    <input type="range" id="textSizeSlider" min="0.8" max="1.5" step="0.1" value="1">
+                </div>
             </div>
-            <div class="accessibility-option">
-                <label>
-                    <input type="checkbox" id="highContrastMode">
-                    <span>고대비 모드</span>
-                </label>
+        </div>
+    </div>
+
+    <!-- Contact Modal -->
+    <div class="modal-overlay" id="contactModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>문의하기</h3>
+                <button class="close-btn" id="closeContactBtn">
+                    <i class="fas fa-times"></i>
+                </button>
             </div>
-            <div class="accessibility-option">
-                <label>
-                    <input type="checkbox" id="reducedMotionMode">
-                    <span>애니메이션 줄이기</span>
-                </label>
-            </div>
-            <div class="accessibility-option">
-                <label for="textSizeSlider">텍스트 크기</label>
-                <input type="range" id="textSizeSlider" min="0.8" max="1.5" step="0.1" value="1">
+            <div class="modal-body">
+                <p>Sensmap에 대한 의견이나 문의사항이 있으시면 언제든지 연락해주세요.</p>
+                <div class="contact-methods">
+                    <a href="mailto:support@sensmap.app" class="contact-btn">
+                        <i class="fas fa-envelope"></i>
+                        이메일로 문의하기
+                    </a>
+                    <div class="contact-info">
+                        <p><strong>이메일:</strong> support@sensmap.app</p>
+                        <p><strong>응답 시간:</strong> 평일 24시간 이내</p>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
