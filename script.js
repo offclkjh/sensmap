@@ -177,6 +177,15 @@ class SensmapApp {
                 });
             });
 
+            // Visualization and filter controls
+            document.querySelectorAll('.viz-btn').forEach(btn => {
+                btn.addEventListener('click', () => this.switchVisualization(btn.dataset.viz));
+            });
+
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                btn.addEventListener('click', () => this.switchFilter(btn.dataset.filter));
+            });
+
             // Settings controls
             document.getElementById('colorBlindMode')?.addEventListener('change', (e) => this.toggleColorBlindMode(e.target.checked));
             document.getElementById('highContrastMode')?.addEventListener('change', (e) => this.toggleHighContrastMode(e.target.checked));
@@ -543,12 +552,15 @@ class SensmapApp {
         this.isRouteMode = !this.isRouteMode;
         const btn = document.getElementById('routeBtn');
         const controls = document.getElementById('routeControls');
+        const routeOptions = document.getElementById('routeOptions');
 
         if (this.isRouteMode) {
             btn.classList.add('active');
             controls.classList.add('show');
-            document.getElementById('routeStatus').textContent = '출발지 선택';
-            this.showToast('지도를 클릭하여 출발지를 선택하세요', 'info');
+            // Show route options immediately when entering route mode
+            routeOptions.style.display = 'flex';
+            document.getElementById('routeStatus').textContent = '경로 유형 선택';
+            this.showToast('경로 유형을 선택하세요', 'info');
         } else {
             this.cancelRouteMode();
         }
@@ -560,6 +572,12 @@ class SensmapApp {
         this.isRouteMode = false;
         document.getElementById('routeBtn').classList.remove('active');
         document.getElementById('routeControls').classList.remove('show');
+        
+        // Hide route options
+        const routeOptions = document.getElementById('routeOptions');
+        if (routeOptions) {
+            routeOptions.style.display = 'none';
+        }
         
         // Clear route markers and route
         Object.values(this.routeMarkers).forEach(marker => {
@@ -1088,7 +1106,6 @@ class SensmapApp {
     totalTutorialSteps = 4;
 
     nextTutorialStep() {
-        console.log('nextTutorialStep called, current step:', this.currentTutorialStep, 'total steps:', this.totalTutorialSteps);
         if (this.currentTutorialStep < this.totalTutorialSteps) {
             this.currentTutorialStep++;
             this.updateTutorialStep();
@@ -1105,34 +1122,25 @@ class SensmapApp {
     }
 
     updateTutorialStep() {
-        console.log('updateTutorialStep called, current step:', this.currentTutorialStep);
-        
         // Update step visibility
         document.querySelectorAll('.tutorial-step').forEach((step, index) => {
-            const isActive = index + 1 === this.currentTutorialStep;
-            step.classList.toggle('active', isActive);
-            console.log(`Step ${index + 1} active:`, isActive);
+            step.classList.toggle('active', index + 1 === this.currentTutorialStep);
         });
 
         // Update dots
         document.querySelectorAll('.tutorial-dots .dot').forEach((dot, index) => {
-            const isActive = index + 1 === this.currentTutorialStep;
-            dot.classList.toggle('active', isActive);
+            dot.classList.toggle('active', index + 1 === this.currentTutorialStep);
         });
 
         // Update button states
         const prevBtn = document.getElementById('tutorialPrev');
         const nextBtn = document.getElementById('tutorialNext');
         
-        if (prevBtn) {
-            prevBtn.disabled = this.currentTutorialStep === 1;
-            console.log('Prev button disabled:', this.currentTutorialStep === 1);
-        }
+        if (prevBtn) prevBtn.disabled = this.currentTutorialStep === 1;
         if (nextBtn) {
-            const isLastStep = this.currentTutorialStep === this.totalTutorialSteps;
-            nextBtn.textContent = isLastStep ? '완료' : '다음';
-            nextBtn.disabled = false; // Always enable the next button
-            console.log('Next button text:', nextBtn.textContent, 'isLastStep:', isLastStep);
+            nextBtn.textContent = this.currentTutorialStep === this.totalTutorialSteps ? '완료' : '다음';
+            // Enable the button on the last step so it can complete the tutorial
+            nextBtn.disabled = false;
         }
     }
 
@@ -1146,14 +1154,11 @@ class SensmapApp {
     }
 
     completeTutorial() {
-        console.log('completeTutorial called');
         const overlay = document.getElementById('tutorialOverlay');
         if (overlay) {
             overlay.classList.remove('show');
-            console.log('Tutorial overlay hidden');
         }
         localStorage.setItem('tutorialCompleted', 'true');
-        console.log('Tutorial completion saved to localStorage');
     }
 
     // Hamburger menu functionality
@@ -1237,7 +1242,74 @@ class SensmapApp {
     selectRouteType(type) {
         // Implementation for route type selection
         console.log('Route type selected:', type);
-        this.showToast(`경로 유형이 선택되었습니다: ${type}`, 'info');
+        
+        // Hide route options and show route planning status
+        const routeOptions = document.getElementById('routeOptions');
+        if (routeOptions) {
+            routeOptions.style.display = 'none';
+        }
+        
+        // Update status and show appropriate message
+        const routeStatus = document.getElementById('routeStatus');
+        if (type === 'sensory') {
+            routeStatus.textContent = '감각 우선 모드';
+            this.showToast('감각 친화적 경로를 찾습니다. 출발지를 선택하세요.', 'info');
+        } else if (type === 'time') {
+            routeStatus.textContent = '시간 우선 모드';
+            this.showToast('빠른 경로를 찾습니다. 출발지를 선택하세요.', 'info');
+        }
+    }
+
+    // Visualization mode switching
+    // 시각화 모드 전환
+    switchVisualization(vizType) {
+        // Remove active class from all viz buttons
+        document.querySelectorAll('.viz-btn').forEach(btn => {
+            btn.classList.remove('active');
+        });
+        
+        // Add active class to clicked button
+        const clickedBtn = document.querySelector(`[data-viz="${vizType}"]`);
+        if (clickedBtn) {
+            clickedBtn.classList.add('active');
+        }
+        
+        // Show toast message
+        const vizName = vizType === 'markers' ? '마커' : '히트맵';
+        this.showToast(`${vizName} 모드로 전환되었습니다`, 'info');
+    }
+
+    // Filter mode switching
+    // 필터 모드 전환
+    switchFilter(filterType) {
+        // Remove active class from all filter buttons
+        document.querySelectorAll('.filter-btn').forEach(btn => {
+            btn.classList.remove('active');
+        });
+        
+        // Add active class to clicked button
+        const clickedBtn = document.querySelector(`[data-filter="${filterType}"]`);
+        if (clickedBtn) {
+            clickedBtn.classList.add('active');
+        }
+        
+        // Show toast message
+        let filterName = '모든 데이터';
+        switch (filterType) {
+            case 'noise':
+                filterName = '소음';
+                break;
+            case 'light':
+                filterName = '빛';
+                break;
+            case 'odor':
+                filterName = '냄새';
+                break;
+            case 'crowd':
+                filterName = '혼잡도';
+                break;
+        }
+        this.showToast(`${filterName} 필터가 적용되었습니다`, 'info');
     }
 
     rateRoute(rating) {
