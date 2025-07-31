@@ -1,10 +1,11 @@
-// Enhanced Sensmap Application
+// Enhanced Sensmap Application 
 class SensmapApp {
     constructor() {
         this.map = L.map('map').setView([37.5665, 126.9780], 14);
         this.gridData = new Map();
         this.GRID_CELL_SIZE = 15; // meters
-        this.currentMode = 'comfort';
+        this.currentDisplayMode = 'heatmap'; // heatmap or sensory
+        this.currentSensoryFilter = 'all'; // all, noise, light, odor, crowd
         this.showData = true;
         this.isRouteMode = false;
         this.routePoints = { start: null, end: null };
@@ -12,24 +13,464 @@ class SensmapApp {
         this.currentRoute = null;
         this.clickedLocation = null;
         this.sensoryLayers = L.layerGroup().addTo(this.map);
-        
-        // Initialize throttled refresh function
+        this.heatmapLayer = null;
+        this.skippedFields = new Set();
+        this.lastAddedData = null;
+        this.undoStack = []; // 실행취소를 위한 스택
+        this.isOfflineMode = false; // 오프라인 모드 플래그
+        this.serverUrl = 'http://localhost:3000'; // 서버 URL
+
+        this.durationSettings = {
+            irregular: { default: 60, max: 60, label: '최대 1시간' },
+            regular: { default: 360, max: 360, label: '최대 6시간' }
+        };
+
+        this.currentTutorialStep = 1;
         this.throttledRefreshVisualization = this.throttle(this.refreshVisualization.bind(this), 100);
-        
+
+        // 데모 데이터 (오프라인 모드용)
+        this.demoData = [
+            { id: 1, lat: 37.5665, lng: 126.9780, noise: 7, light: 5, odor: 3, crowd: 8, type: 'irregular', duration: 45, wheelchair: false, created_at: new Date(Date.now() - 1000 * 60 * 30).toISOString() },
+            { id: 2, lat: 37.5670, lng: 126.9785, noise: 4, light: 6, odor: 5, crowd: 6, type: 'regular', duration: 240, wheelchair: false, created_at: new Date(Date.now() - 1000 * 60 * 60 * 2).toISOString() },
+            { id: 3, lat: 37.5660, lng: 126.9775, noise: 8, light: 4, odor: 7, crowd: 9, type: 'irregular', duration: 30, wheelchair: true, created_at: new Date(Date.now() - 1000 * 60 * 45).toISOString() },
+            { id: 4, lat: 37.5675, lng: 126.9790, noise: 3, light: 7, odor: 2, crowd: 4, type: 'regular', duration: 360, wheelchair: false, created_at: new Date(Date.now() - 1000 * 60 * 60 * 6).toISOString() },
+            { id: 5, lat: 37.5655, lng: 126.9770, noise: 6, light: 5, odor: 4, crowd: 7, type: 'irregular', duration: 60, wheelchair: false, created_at: new Date(Date.now() - 1000 * 60 * 15).toISOString() }
+        ];
+
         this.initializeMap();
         this.setupEventListeners();
-        this.loadSavedData();
+        this.checkServerConnection();
         this.setupGeolocation();
         this.loadAccessibilitySettings();
         this.checkTutorialCompletion();
         this.initializeHamburgerMenu();
-        
-        // Hide loading overlay after initialization
+
         this.hideLoadingOverlay();
     }
 
-    // Hide loading overlay and show the main application
-    // 로딩 오버레이를 숨기고 메인 애플리케이션을 표시합니다
+    // --- 서버 연결 확인 및 데이터 로딩 ---
+
+    async checkServerConnection() {
+        try {
+            const response = await fetch(`${this.serverUrl}/api/health`, {
+                method: 'GET',
+                timeout: 5000
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success) {
+                    this.isOfflineMode = false;
+                    console.log('✅ 서버 연결 성공');
+                    this.loadDataFromServer();
+                    return;
+                }
+            }
+            throw new Error('Server health check failed');
+        } catch (error) {
+            console.warn('⚠️ 서버 연결 실패, 오프라인 모드로 전환:', error.message);
+            this.enableOfflineMode();
+        }
+    }
+
+    enableOfflineMode() {
+        this.isOfflineMode = true;
+        this.showOfflineBanner();
+        this.loadDemoData();
+    }
+
+    showOfflineBanner() {
+        const alertBanner = document.getElementById('alertBanner');
+        const alertText = document.getElementById('alertText');
+        if (alertBanner && alertText) {
+            alertText.textContent = '서버에 연결할 수 없어 데모 모드로 실행 중입니다. 일부 기능이 제한될 수 있습니다.';
+            alertBanner.style.display = 'flex';
+        }
+    }
+
+    loadDemoData() {
+        try {
+            this.showToast('데모 데이터를 불러오는 중...', 'info');
+            
+            // 기존 gridData를 초기화
+            this.gridData.clear();
+
+            // 데모 데이터를 gridData에 추가
+            this.demoData.forEach(report => {
+                const latlng = { lat: report.lat, lng: report.lng };
+                const gridKey = this.getGridKey(latlng);
+
+                if (!this.gridData.has(gridKey)) {
+                    this.gridData.set(gridKey, {
+                        reports: [],
+                        bounds: this.getGridBounds(gridKey)
+                    });
+                }
+                
+                const formattedReport = { 
+                    ...report, 
+                    timestamp: new Date(report.created_at).getTime() 
+                };
+                this.gridData.get(gridKey).reports.push(formattedReport);
+            });
+
+            this.refreshVisualization();
+            console.log(`${this.demoData.length}개의 데모 데이터를 불러왔습니다.`);
+            this.showToast('데모 데이터를 불러왔습니다', 'success');
+
+        } catch (error) {
+            console.error('데모 데이터 로딩 오류:', error);
+            this.showToast('데이터를 불러오는 중 오류가 발생했습니다.', 'error');
+        }
+    }
+
+    // 서버에서 모든 감각 데이터를 불러오는 함수
+    async loadDataFromServer() {
+        if (this.isOfflineMode) {
+            this.loadDemoData();
+            return;
+        }
+
+        try {
+            this.showToast('데이터를 불러오는 중...', 'info');
+            
+            const response = await fetch(`${this.serverUrl}/api/reports?recent_hours=168`); // 최근 1주일
+            if (!response.ok) {
+                throw new Error(`서버 응답 오류: ${response.status}`);
+            }
+            
+            const result = await response.json();
+            
+            if (!result.success) {
+                throw new Error(result.error || '서버에서 오류가 발생했습니다.');
+            }
+            
+            // 기존 gridData를 초기화
+            this.gridData.clear();
+
+            // 서버에서 받은 각 report를 gridData에 추가
+            result.data.forEach(report => {
+                const latlng = { lat: report.lat, lng: report.lng };
+                const gridKey = this.getGridKey(latlng);
+
+                if (!this.gridData.has(gridKey)) {
+                    this.gridData.set(gridKey, {
+                        reports: [],
+                        bounds: this.getGridBounds(gridKey)
+                    });
+                }
+                
+                const formattedReport = { 
+                    ...report, 
+                    timestamp: new Date(report.created_at).getTime() 
+                };
+                this.gridData.get(gridKey).reports.push(formattedReport);
+            });
+
+            this.refreshVisualization();
+            console.log(`${result.data.length}개의 감각 데이터를 서버로부터 불러왔습니다.`);
+            this.showToast(`${result.data.length}개의 감각 데이터를 불러왔습니다`, 'success');
+
+        } catch (error) {
+            console.error('서버 데이터 로딩 오류:', error);
+            this.enableOfflineMode();
+        }
+    }
+
+    // 새로운 감각 데이터를 서버로 전송하는 함수
+    async handleSensorySubmit(e) {
+        e.preventDefault();
+
+        if (!this.clickedLocation) {
+            this.showToast('위치를 먼저 선택해주세요', 'warning');
+            return;
+        }
+
+        try {
+            const formData = new FormData(e.target);
+            const selectedType = document.querySelector('.type-option.selected')?.dataset.type || 'irregular';
+
+            const sensoryFields = ['noise', 'light', 'odor', 'crowd'];
+            const hasAtLeastOneValue = sensoryFields.some(field =>
+                !this.skippedFields.has(field) && formData.get(field) !== null && formData.get(field) !== ''
+            );
+
+            if (!hasAtLeastOneValue) {
+                this.showToast('최소 하나의 감각 정보는 입력해야 합니다', 'warning');
+                return;
+            }
+
+            const durationInput = document.getElementById('durationInput');
+            let duration = durationInput ? formData.get('duration') : null;
+            duration = (duration && duration.trim() !== '') ? parseInt(duration) : null;
+
+            if (duration !== null) {
+                const maxDuration = this.durationSettings[selectedType].max;
+                if (isNaN(duration) || duration < 1 || duration > maxDuration) {
+                    this.showToast(`예상 지속 시간은 1분에서 ${maxDuration}분 사이여야 합니다.`, 'warning');
+                    return;
+                }
+            }
+
+            // 서버로 보낼 데이터 객체 생성
+            const reportData = {
+                lat: this.clickedLocation.lat,
+                lng: this.clickedLocation.lng,
+                type: selectedType,
+                duration: duration,
+                wheelchair: formData.get('wheelchair') === 'on'
+            };
+
+            sensoryFields.forEach(field => {
+                if (!this.skippedFields.has(field)) {
+                    reportData[field] = parseInt(formData.get(field));
+                } else {
+                    reportData[field] = null;
+                }
+            });
+
+            // 로딩 상태 표시
+            const submitButton = e.target.querySelector('button[type="submit"]');
+            const originalText = submitButton.innerHTML;
+            submitButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 저장 중...';
+            submitButton.disabled = true;
+
+            if (this.isOfflineMode) {
+                // 오프라인 모드에서는 로컬에만 저장
+                const newReport = {
+                    id: Date.now(), // 임시 ID
+                    ...reportData,
+                    created_at: new Date().toISOString()
+                };
+                this.addSensoryDataToMap(newReport);
+                this.showToast('오프라인 모드: 데이터가 임시 저장되었습니다', 'info');
+            } else {
+                // 서버로 POST 요청 보내기
+                const response = await fetch(`${this.serverUrl}/api/reports`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(reportData),
+                });
+
+                const result = await response.json();
+
+                if (!response.ok || !result.success) {
+                    throw new Error(result.error || '서버에 데이터를 저장하는 데 실패했습니다.');
+                }
+
+                // 성공적으로 저장되면, 화면에 즉시 반영
+                this.addSensoryDataToMap(result.data);
+                this.lastAddedData = result.data;
+                
+                // 실행취소 스택에 추가
+                this.undoStack.push({
+                    action: 'add',
+                    data: result.data,
+                    timestamp: Date.now()
+                });
+
+                this.showToast(result.message || '감각 정보가 성공적으로 저장되었습니다', 'success');
+                this.showUndoAction();
+            }
+
+            this.resetSensoryForm();
+            this.closePanels();
+
+        } catch (error) {
+            this.handleError('감각 정보 저장 중 오류가 발생했습니다', error);
+        } finally {
+            // 버튼 상태 복원
+            const submitButton = e.target.querySelector('button[type="submit"]');
+            if (submitButton) {
+                submitButton.innerHTML = '<i class="fas fa-save"></i> 감각 정보 저장';
+                submitButton.disabled = false;
+            }
+        }
+    }
+
+    // 서버 응답을 받아 지도에 데이터를 추가하는 함수
+    addSensoryDataToMap(report) {
+        const latlng = { lat: report.lat, lng: report.lng };
+        const gridKey = this.getGridKey(latlng);
+
+        if (!this.gridData.has(gridKey)) {
+            this.gridData.set(gridKey, {
+                reports: [],
+                bounds: this.getGridBounds(gridKey)
+            });
+        }
+        
+        const formattedReport = { 
+            ...report, 
+            timestamp: new Date(report.created_at).getTime() 
+        };
+        this.gridData.get(gridKey).reports.push(formattedReport);
+
+        this.refreshVisualization();
+        this.createAdditionEffect(latlng, report.type);
+    }
+
+    // 감각 데이터 삭제 함수 (서버 연동)
+    async deleteReport(gridKey, reportId) {
+        try {
+            // 확인 대화창
+            if (!confirm('이 감각 정보를 삭제하시겠습니까?')) {
+                return;
+            }
+
+            this.showToast('삭제하는 중...', 'info');
+
+            if (this.isOfflineMode) {
+                // 오프라인 모드에서는 로컬에서만 삭제
+                const cellData = this.gridData.get(gridKey);
+                if (cellData && cellData.reports) {
+                    const reportToDelete = cellData.reports.find(report => report.id === reportId);
+                    cellData.reports = cellData.reports.filter(report => report.id !== reportId);
+                    
+                    if (cellData.reports.length === 0) {
+                        this.gridData.delete(gridKey);
+                    }
+
+                    this.refreshVisualization();
+                    this.map.closePopup();
+                    this.showToast('오프라인 모드: 데이터가 임시 삭제되었습니다', 'info');
+                }
+                return;
+            }
+
+            const response = await fetch(`${this.serverUrl}/api/reports/${reportId}`, {
+                method: 'DELETE',
+            });
+
+            const result = await response.json();
+
+            if (!response.ok || !result.success) {
+                throw new Error(result.error || '삭제에 실패했습니다.');
+            }
+
+            // 로컬 데이터에서도 제거
+            const cellData = this.gridData.get(gridKey);
+            if (cellData && cellData.reports) {
+                cellData.reports = cellData.reports.filter(report => report.id !== reportId);
+                
+                // 리포트가 없으면 그리드 셀 자체를 삭제
+                if (cellData.reports.length === 0) {
+                    this.gridData.delete(gridKey);
+                }
+            }
+
+            // 실행취소 스택에 추가
+            this.undoStack.push({
+                action: 'delete',
+                data: result.data,
+                gridKey: gridKey,
+                timestamp: Date.now()
+            });
+
+            this.refreshVisualization();
+            this.map.closePopup();
+            
+            this.showToast(result.message || '감각 정보가 삭제되었습니다', 'success');
+            this.showUndoAction();
+
+        } catch (error) {
+            console.error('삭제 오류:', error);
+            this.showToast('삭제 중 오류가 발생했습니다: ' + error.message, 'error');
+        }
+    }
+
+    // 실행취소 기능
+    async undoLastAction() {
+        if (this.undoStack.length === 0) {
+            this.showToast('실행취소할 작업이 없습니다', 'warning');
+            return;
+        }
+
+        if (this.isOfflineMode) {
+            this.showToast('오프라인 모드에서는 실행취소가 지원되지 않습니다', 'warning');
+            return;
+        }
+
+        const lastAction = this.undoStack.pop();
+        
+        try {
+            if (lastAction.action === 'add') {
+                // 추가 작업 실행취소 (삭제)
+                await this.deleteReportSilent(lastAction.data.id);
+                this.showToast('추가 작업이 취소되었습니다', 'info');
+                
+            } else if (lastAction.action === 'delete') {
+                // 삭제 작업 실행취소 (다시 추가)
+                await this.restoreDeletedReport(lastAction.data);
+                this.showToast('삭제 작업이 취소되었습니다', 'info');
+            }
+
+            this.hideUndoAction();
+            
+        } catch (error) {
+            console.error('실행취소 오류:', error);
+            this.showToast('실행취소 중 오류가 발생했습니다', 'error');
+            // 실패시 스택에 다시 추가
+            this.undoStack.push(lastAction);
+        }
+    }
+
+    // 조용한 삭제 (실행취소용)
+    async deleteReportSilent(reportId) {
+        const response = await fetch(`${this.serverUrl}/api/reports/${reportId}`, {
+            method: 'DELETE',
+        });
+
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+            throw new Error(result.error || '삭제에 실패했습니다.');
+        }
+
+        // 로컬 데이터에서 제거
+        this.gridData.forEach((cellData, gridKey) => {
+            if (cellData.reports) {
+                cellData.reports = cellData.reports.filter(report => report.id !== reportId);
+                if (cellData.reports.length === 0) {
+                    this.gridData.delete(gridKey);
+                }
+            }
+        });
+
+        this.refreshVisualization();
+    }
+
+    // 삭제된 리포트 복원 (실행취소용)
+    async restoreDeletedReport(reportData) {
+        // 서버에서 복원은 불가능하므로 새로 추가
+        const response = await fetch(`${this.serverUrl}/api/reports`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                lat: reportData.lat,
+                lng: reportData.lng,
+                noise: reportData.noise,
+                light: reportData.light,
+                odor: reportData.odor,
+                crowd: reportData.crowd,
+                type: reportData.type,
+                duration: reportData.duration,
+                wheelchair: reportData.wheelchair
+            }),
+        });
+
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+            throw new Error(result.error || '복원에 실패했습니다.');
+        }
+
+        this.addSensoryDataToMap(result.data);
+    }
+
+
     hideLoadingOverlay() {
         const loadingOverlay = document.getElementById('loadingOverlay');
         if (loadingOverlay) {
@@ -37,44 +478,39 @@ class SensmapApp {
         }
     }
 
-    // Show error boundary when something goes wrong
-    // 오류가 발생했을 때 오류 경계를 표시합니다
     showErrorBoundary(error) {
         console.error('Application error:', error);
         const loadingOverlay = document.getElementById('loadingOverlay');
         const errorBoundary = document.getElementById('errorBoundary');
-        
+
         if (loadingOverlay) {
             loadingOverlay.style.display = 'none';
         }
-        
+
         if (errorBoundary) {
             errorBoundary.style.display = 'flex';
         }
     }
 
-    // Sets up the base tile layer for the map. Adds a search box control to enable location searching
-    // 지도 기본 타일 레이어를 설정합니다. 위치 검색 기능이 있는 검색 상자 컨트롤을 추가합니다
     initializeMap() {
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap contributors',
             maxZoom: 19
         }).addTo(this.map);
 
-        // Add search control
-        const provider = new GeoSearch.OpenStreetMapProvider();
-        const searchControl = new GeoSearch.GeoSearchControl({
-            provider,
-            style: 'bar',
-            showMarker: false,
-            autoClose: true,
-            keepResult: false
-        });
-        this.map.addControl(searchControl);
+        if (typeof GeoSearch !== 'undefined') {
+            const provider = new GeoSearch.OpenStreetMapProvider();
+            const searchControl = new GeoSearch.GeoSearchControl({
+                provider,
+                style: 'bar',
+                showMarker: false,
+                autoClose: true,
+                keepResult: false
+            });
+            this.map.addControl(searchControl);
+        }
     }
 
-    // Binds UI buttons and sliders to their event handlers for user interaction
-    // 사용자 인터페이스 버튼과 슬라이더에 이벤트 핸들러를 연결합니다
     setupEventListeners() {
         try {
             // Tutorial controls
@@ -89,25 +525,28 @@ class SensmapApp {
                 });
             });
 
-            // Header controls
-            document.querySelectorAll('.mode-btn').forEach(btn => {
-                btn.addEventListener('click', () => this.setVisualizationMode(btn.dataset.mode));
+            // Updated header controls for new display modes
+            document.getElementById('heatmapBtn')?.addEventListener('click', () => this.setDisplayMode('heatmap'));
+            document.getElementById('sensoryBtn')?.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.toggleSensoryDropdown();
+            });
+
+            // Sensory filter options
+            document.querySelectorAll('.sensory-option').forEach(option => {
+                option.addEventListener('click', () => this.setSensoryFilter(option.dataset.sensory));
             });
 
             document.getElementById('intensitySlider')?.addEventListener('input', (e) => {
                 document.getElementById('intensityValue').textContent = e.target.value;
-                this.refreshVisualization();
+                this.throttledRefreshVisualization();
             });
 
             document.getElementById('showDataBtn')?.addEventListener('click', () => this.toggleDataDisplay());
-            document.getElementById('profileBtn')?.addEventListener('click', () => this.openProfilePanel());
             document.getElementById('routeBtn')?.addEventListener('click', () => this.toggleRouteMode());
 
             // Hamburger menu controls
-            document.getElementById('hamburgerBtn')?.addEventListener('click', () => {
-                console.log('Hamburger button clicked');
-                this.toggleHamburgerMenu();
-            });
+            document.getElementById('hamburgerBtn')?.addEventListener('click', () => this.toggleHamburgerMenu());
             document.getElementById('profileMenuBtn')?.addEventListener('click', () => {
                 this.closeHamburgerMenu();
                 this.openProfilePanel();
@@ -136,15 +575,13 @@ class SensmapApp {
 
             // Route controls
             document.getElementById('sensoryRouteBtn')?.addEventListener('click', () => this.selectRouteType('sensory'));
+            document.getElementById('balancedRouteBtn')?.addEventListener('click', () => this.selectRouteType('balanced'));
             document.getElementById('timeRouteBtn')?.addEventListener('click', () => this.selectRouteType('time'));
 
-            document.querySelectorAll('.rating-btn').forEach(btn => {
-                btn.addEventListener('click', () => this.rateRoute(btn.dataset.rating));
-            });
-            document.getElementById('closeRating')?.addEventListener('click', () => this.hideRouteRating());
-
-            // Other controls
+            // Undo action
             document.getElementById('undoBtn')?.addEventListener('click', () => this.undoLastAction());
+
+            // Alert banner
             document.getElementById('alertClose')?.addEventListener('click', () => this.hideAlertBanner());
 
             // Forms
@@ -161,7 +598,7 @@ class SensmapApp {
                 });
             });
 
-            // Skip buttons
+            // Skip toggle buttons
             document.querySelectorAll('.skip-btn').forEach(btn => {
                 btn.addEventListener('click', (e) => this.toggleFieldSkip(e.target.dataset.field));
             });
@@ -177,15 +614,6 @@ class SensmapApp {
                 });
             });
 
-            // Visualization and filter controls
-            document.querySelectorAll('.viz-btn').forEach(btn => {
-                btn.addEventListener('click', () => this.switchVisualization(btn.dataset.viz));
-            });
-
-            document.querySelectorAll('.filter-btn').forEach(btn => {
-                btn.addEventListener('click', () => this.switchFilter(btn.dataset.filter));
-            });
-
             // Settings controls
             document.getElementById('colorBlindMode')?.addEventListener('change', (e) => this.toggleColorBlindMode(e.target.checked));
             document.getElementById('highContrastMode')?.addEventListener('change', (e) => this.toggleHighContrastMode(e.target.checked));
@@ -196,6 +624,9 @@ class SensmapApp {
             document.addEventListener('click', (e) => {
                 if (!e.target.closest('.hamburger-menu')) {
                     this.closeHamburgerMenu();
+                }
+                if (!e.target.closest('.sensory-filter') && !e.target.closest('#sensoryDropdown')) {
+                    this.closeSensoryDropdown();
                 }
                 if (!e.target.closest('.modal-overlay') && !e.target.closest('#contactBtn')) {
                     this.closeContactModal();
@@ -209,7 +640,7 @@ class SensmapApp {
                     this.closeSettingsPanel();
                     this.closeHamburgerMenu();
                     this.closeContactModal();
-                    this.hideRouteRating();
+                    this.closeSensoryDropdown();
                 }
             });
 
@@ -220,88 +651,411 @@ class SensmapApp {
             // Map click
             this.map.on('click', (e) => this.handleMapClick(e));
 
-            // Auto cleanup old data
-            setInterval(() => this.cleanupExpiredData(), 60000); // Every minute
+            // 데이터 새로고침 (5분마다, 온라인 모드에서만)
+            if (!this.isOfflineMode) {
+                setInterval(() => {
+                    this.loadDataFromServer();
+                }, 5 * 60 * 1000);
+            }
 
         } catch (error) {
             this.handleError('이벤트 리스너 설정 중 오류가 발생했습니다', error);
         }
     }
 
-    // Handles map clicks based on mode: selects route points if in route mode, otherwise sets clicked location and shows sensory data popup.
-    // 현재 모드에 따라 지도 클릭을 처리합니다: 경로 모드일 때는 경로 지점을 선택하고, 그렇지 않으면 클릭한 위치를 설정하고 감각 정보 팝업을 표시합니다.
-    handleMapClick(e) {
-        if (this.isRouteMode) {
-            this.handleRouteClick(e.latlng);
+    setDisplayMode(mode) {
+        this.currentDisplayMode = mode;
+
+        document.querySelectorAll('.display-btn').forEach(btn => {
+            btn.classList.remove('active');
+        });
+
+        if (mode === 'heatmap') {
+            document.getElementById('heatmapBtn').classList.add('active');
+            this.closeSensoryDropdown();
+        } else if (mode === 'sensory') {
+            document.getElementById('sensoryBtn').classList.add('active');
+        }
+
+        this.refreshVisualization();
+    }
+
+    toggleSensoryDropdown() {
+        const dropdown = document.getElementById('sensoryDropdown');
+        const isOpen = dropdown.classList.contains('show');
+
+        if (isOpen) {
+            this.closeSensoryDropdown();
+        } else {
+            this.setDisplayMode('sensory');
+            dropdown.classList.add('show');
+        }
+    }
+
+    closeSensoryDropdown() {
+        const dropdown = document.getElementById('sensoryDropdown');
+        dropdown.classList.remove('show');
+    }
+
+    setSensoryFilter(filter) {
+        this.currentSensoryFilter = filter;
+
+        document.querySelectorAll('.sensory-option').forEach(option => {
+            option.classList.toggle('active', option.dataset.sensory === filter);
+        });
+
+        this.refreshVisualization();
+        this.closeSensoryDropdown();
+    }
+
+    toggleFieldSkip(fieldName) {
+        const fieldElement = document.querySelector(`[data-field="${fieldName}"]`);
+        const toggleBtn = fieldElement?.querySelector('.skip-btn');
+        const slider = fieldElement?.querySelector('.range-slider');
+
+        if (!fieldElement || !toggleBtn || !slider) return;
+
+        if (this.skippedFields.has(fieldName)) {
+            this.skippedFields.delete(fieldName);
+            fieldElement.classList.remove('skipped');
+            toggleBtn.classList.remove('active');
+            toggleBtn.textContent = '건너뛰기';
+            slider.disabled = false;
+        } else {
+            this.skippedFields.add(fieldName);
+            fieldElement.classList.add('skipped');
+            toggleBtn.classList.add('active');
+            toggleBtn.textContent = '포함';
+            slider.disabled = true;
+        }
+    }
+
+    selectDataType(selectedOptionElement) {
+        document.querySelectorAll('.type-option').forEach(option => {
+            option.classList.remove('selected');
+            option.setAttribute('aria-pressed', 'false');
+        });
+        selectedOptionElement.classList.add('selected');
+        selectedOptionElement.setAttribute('aria-pressed', 'true');
+
+        this.updateDurationInput(selectedOptionElement.dataset.type);
+    }
+
+    updateDurationInput(type) {
+        const durationInput = document.getElementById('durationInput');
+        const selectedOptionElement = document.querySelector(`.type-option[data-type="${type}"]`);
+        if (!durationInput || !this.durationSettings[type] || !selectedOptionElement) return;
+
+        const settings = this.durationSettings[type];
+
+        durationInput.setAttribute('max', settings.max);
+
+        const examples = type === 'irregular' ? '30분, 60분 등' : '180분, 360분 등';
+        durationInput.setAttribute('placeholder', `예: ${examples} (${settings.label})`);
+
+        const currentValue = parseInt(durationInput.value);
+        if (isNaN(currentValue) || currentValue > settings.max) {
+            durationInput.value = '';
+        }
+
+        const typeDesc = selectedOptionElement.querySelector('.type-desc');
+        if (typeDesc) {
+            const baseText = type === 'irregular' ? '공사, 이벤트 등' : '건물, 도로 특성';
+            typeDesc.innerHTML = `${baseText}<br>(${settings.label})`;
+        }
+    }
+
+    refreshVisualization() {
+        if (!this.showData) return;
+
+        this.sensoryLayers.clearLayers();
+
+        if (this.heatmapLayer) {
+            this.map.removeLayer(this.heatmapLayer);
+            this.heatmapLayer = null;
+        }
+
+        if (this.currentDisplayMode === 'heatmap') {
+            this.createHeatmapVisualization();
+        } else if (this.currentDisplayMode === 'sensory') {
+            this.createSensoryVisualization();
+        }
+    }
+
+    createHeatmapVisualization() {
+        try {
+            if (typeof L.heatLayer === 'undefined') {
+                console.warn('Leaflet heat plugin not loaded, falling back to markers');
+                this.createSensoryVisualization();
+                return;
+            }
+
+            const heatmapData = [];
+            const profile = this.getSensitivityProfile();
+            const currentTime = Date.now();
+            const intensity = parseFloat(document.getElementById('intensitySlider')?.value || 0.7);
+            let maxObservedScore = 0;
+
+            this.gridData.forEach((cellData, gridKey) => {
+                if (!cellData.reports || cellData.reports.length === 0) return;
+
+                const bounds = this.getGridBounds(gridKey);
+                const center = bounds.getCenter();
+
+                let totalWeight = 0;
+                let weightedScores = { noise: 0, light: 0, odor: 0, crowd: 0 };
+
+                cellData.reports.forEach(report => {
+                    const timeDecay = this.calculateTimeDecay(report.timestamp, report.type, currentTime);
+
+                    if (timeDecay > 0.1) {
+                        const weight = timeDecay;
+                        ['noise', 'light', 'odor', 'crowd'].forEach(factor => {
+                            if (report[factor] !== undefined && report[factor] !== null) {
+                                weightedScores[factor] += report[factor] * weight;
+                            }
+                        });
+                        totalWeight += weight;
+                    }
+                });
+
+                if (totalWeight === 0) return;
+
+                Object.keys(weightedScores).forEach(key => {
+                    weightedScores[key] /= totalWeight;
+                });
+
+                const personalizedScore = this.calculatePersonalizedScore(weightedScores, profile);
+                maxObservedScore = Math.max(maxObservedScore, personalizedScore);
+                heatmapData.push([center.lat, center.lng, personalizedScore]);
+            });
+
+            if (heatmapData.length > 0) {
+                const finalHeatmapData = heatmapData.map(data => {
+                    const normalizedIntensity = maxObservedScore > 0 ? (data[2] / maxObservedScore) * intensity : 0.1 * intensity;
+                    return [data[0], data[1], Math.max(0.1, Math.min(1.0, normalizedIntensity))];
+                });
+
+                this.heatmapLayer = L.heatLayer(finalHeatmapData, {
+                    radius: 25,
+                    blur: 15,
+                    maxZoom: 17,
+                    max: 1.0,
+                    gradient: {
+                        0.0: '#00ff00',
+                        0.3: '#ffff00',
+                        0.6: '#ff8800',
+                        1.0: '#ff0000'
+                    }
+                }).addTo(this.map);
+            }
+
+        } catch (error) {
+            console.error('Heatmap creation failed:', error);
+            this.createSensoryVisualization();
+        }
+    }
+
+    createSensoryVisualization() {
+        const profile = this.getSensitivityProfile();
+        const intensity = parseFloat(document.getElementById('intensitySlider')?.value || 0.7);
+        const currentTime = Date.now();
+
+        this.gridData.forEach((cellData, gridKey) => {
+            if (!cellData.reports || cellData.reports.length === 0) return;
+
+            let totalWeight = 0;
+            let weightedScores = { noise: 0, light: 0, odor: 0, crowd: 0 };
+            let hasWheelchairIssue = false;
+
+            cellData.reports.forEach(report => {
+                const timeDecay = this.calculateTimeDecay(report.timestamp, report.type, currentTime);
+
+                if (timeDecay > 0.1) {
+                    const weight = timeDecay;
+                    ['noise', 'light', 'odor', 'crowd'].forEach(factor => {
+                        if (report[factor] !== undefined && report[factor] !== null) {
+                            weightedScores[factor] += report[factor] * weight;
+                        }
+                    });
+                    totalWeight += weight;
+
+                    if (report.wheelchair) hasWheelchairIssue = true;
+                }
+            });
+
+            if (totalWeight === 0) return;
+
+            Object.keys(weightedScores).forEach(key => {
+                weightedScores[key] /= totalWeight;
+            });
+
+            if (this.currentSensoryFilter !== 'all') {
+                const sensorValue = weightedScores[this.currentSensoryFilter];
+                if (sensorValue === undefined || sensorValue === 0) return;
+
+                this.createSensoryMarker(gridKey, this.currentSensoryFilter, sensorValue, hasWheelchairIssue, intensity);
+            } else {
+                const personalizedScore = this.calculatePersonalizedScore(weightedScores, profile);
+                this.createVisualizationMarker(gridKey, weightedScores, personalizedScore, hasWheelchairIssue, intensity);
+            }
+        });
+    }
+
+    createSensoryMarker(gridKey, sensorType, sensorValue, hasWheelchairIssue, intensity) {
+        const bounds = this.getGridBounds(gridKey);
+        const center = bounds.getCenter();
+
+        let color, icon;
+        const normalizedValue = Math.max(0, Math.min(10, sensorValue));
+
+        switch (sensorType) {
+            case 'noise':
+                color = `hsl(${360 - (normalizedValue * 36)}, 70%, 50%)`;
+                icon = '🔊';
+                break;
+            case 'light':
+                color = `hsl(${60 - (normalizedValue * 6)}, 70%, ${50 + (normalizedValue * 3)}%)`;
+                icon = '💡';
+                break;
+            case 'odor':
+                color = `hsl(${300 - (normalizedValue * 30)}, 70%, 50%)`;
+                icon = '👃';
+                break;
+            case 'crowd':
+                color = `hsl(${240 - (normalizedValue * 24)}, 70%, 50%)`;
+                icon = '👥';
+                break;
+        }
+
+        const size = 15 + (normalizedValue * 2) * intensity;
+
+        const markerIcon = L.divIcon({
+            className: 'sensory-marker',
+            html: `
+                <div style="
+                    width: ${size}px;
+                    height: ${size}px;
+                    background: ${color};
+                    border-radius: 50%;
+                    border: 2px solid white;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    color: white;
+                    font-size: ${Math.max(8, size * 0.4)}px;
+                    font-weight: bold;
+                    animation: pulseMarker 2s ease-in-out infinite;
+                ">
+                    ${hasWheelchairIssue ? '♿' : icon}
+                </div>
+            `,
+            iconSize: [size, size],
+            iconAnchor: [size/2, size/2]
+        });
+
+        const marker = L.marker(center, { icon: markerIcon });
+        marker.on('click', () => {
+            this.showLocationPopup(center, gridKey, this.gridData.get(gridKey));
+        });
+        this.sensoryLayers.addLayer(marker);
+    }
+
+    resetSensoryForm() {
+        const form = document.getElementById('sensoryForm');
+        form.reset();
+
+        document.querySelectorAll('.range-slider').forEach(slider => {
+            const valueElement = slider.parentNode?.querySelector('.range-value');
+            if (valueElement) {
+                valueElement.textContent = slider.value;
+            }
+        });
+
+        document.querySelectorAll('.type-option').forEach(option => {
+            option.classList.remove('selected');
+            option.setAttribute('aria-pressed', 'false');
+        });
+        const defaultOption = document.querySelector('.type-option[data-type="irregular"]');
+        if (defaultOption) {
+            defaultOption.classList.add('selected');
+            defaultOption.setAttribute('aria-pressed', 'true');
+        }
+
+        this.updateDurationInput('irregular');
+
+        this.skippedFields.clear();
+        document.querySelectorAll('.smart-form-group').forEach(field => {
+            field.classList.remove('skipped');
+            const toggleBtn = field.querySelector('.skip-btn');
+            const slider = field.querySelector('.range-slider');
+            if (toggleBtn && slider) {
+                toggleBtn.classList.remove('active');
+                toggleBtn.textContent = '건너뛰기';
+                slider.disabled = false;
+            }
+        });
+
+        this.clickedLocation = null;
+    }
+
+    showUndoAction() {
+        if (this.isOfflineMode) return; // 오프라인 모드에서는 실행 취소 표시하지 않음
+        
+        const undoAction = document.getElementById('undoAction');
+        if (undoAction) {
+            undoAction.classList.add('show');
+            undoAction.style.display = 'flex';
+            
+            // 5초 후 자동으로 숨김
+            setTimeout(() => {
+                this.hideUndoAction();
+            }, 5000);
+        }
+    }
+
+    hideUndoAction() {
+        const undoAction = document.getElementById('undoAction');
+        if (undoAction) {
+            undoAction.classList.remove('show');
+            setTimeout(() => {
+                undoAction.style.display = 'none';
+            }, 300);
+        }
+    }
+
+    hideAlertBanner() {
+        const alertBanner = document.getElementById('alertBanner');
+        if (alertBanner) {
+            alertBanner.style.display = 'none';
+        }
+    }
+
+    async calculateRoute(routeType = 'sensory') {
+        if (!this.routePoints.start || !this.routePoints.end) {
+            this.showToast('출발지와 도착지를 모두 설정해주세요', 'warning');
             return;
         }
 
-        this.clickedLocation = e.latlng;
-        const gridKey = this.getGridKey(e.latlng);
-        const cellData = this.gridData.get(gridKey);
-        
-        this.showLocationPopup(e.latlng, gridKey, cellData);
-    }
-
-    // Handles user clicks in route mode to set start and end points for routing.
-    // 사용자가 경로 모드에서 클릭한 위치를 시작점과 끝점으로 설정합니다.
-    handleRouteClick(latlng) {
-        if (!this.routePoints.start) {
-            this.setRoutePoint('start', latlng);
-        } else if (!this.routePoints.end) {
-            this.setRoutePoint('end', latlng);
-            this.calculateRoute();
-        }
-    }
-
-    // Sets the start or end point for route planning based on user click input.
-    // 사용자 클릭에 따라 경로 계획의 시작점 또는 끝점을 설정합니다.
-    setRoutePoint(type, latlng) {
-        if (this.routeMarkers[type]) {
-            this.map.removeLayer(this.routeMarkers[type]);
-        }
-
-        this.routePoints[type] = latlng;
-        
-        const iconColor = type === 'start' ? '#10b981' : '#ef4444';
-        const icon = L.divIcon({
-            className: 'route-marker',
-            html: `<div style="background: ${iconColor}; width: 20px; height: 20px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.3);"></div>`,
-            iconSize: [20, 20],
-            iconAnchor: [10, 10]
-        });
-
-        this.routeMarkers[type] = L.marker(latlng, { icon }).addTo(this.map);
-        
-        const status = type === 'start' ? '도착지 선택' : '경로 계산 중...';
-        document.getElementById('routeStatus').textContent = status;
-    }
-
-    // Calculates the walking route between the selected start and end points using a routing API.
-    // 선택된 출발지와 도착지 사이의 도보 경로를 계산합니다. 경로가 계산되면 지도에 표시하고, 이전 경로는 제거합니다.
-    async calculateRoute() {
-        if (!this.routePoints.start || !this.routePoints.end) return;
-
         try {
-            this.showToast('최적 경로를 계산하고 있습니다...', 'info');
-            
-            // Simple route calculation using OSRM
+            this.showToast(`${this.getRouteTypeLabel(routeType)} 경로를 계산하고 있습니다...`, 'info');
+
             const start = this.routePoints.start;
             const end = this.routePoints.end;
-            
-            const url = `https://router.project-osrm.org/route/v1/walking/${start.lng},${start.lat};${end.lng},${end.lat}?overview=full&geometries=geojson&alternatives=true`;
-            
-            const response = await fetch(url);
-            const data = await response.json();
-            
-            if (data.routes && data.routes.length > 0) {
-                const bestRoute = this.selectBestRoute(data.routes);
-                this.displayRoute(bestRoute);
-                document.getElementById('routeStatus').textContent = '경로 생성 완료';
-                this.showToast('쾌적한 경로를 찾았습니다!', 'success');
-            } else {
+
+            const routes = await this.getRouteAlternatives(start, end);
+
+            if (!routes || routes.length === 0) {
                 throw new Error('경로를 찾을 수 없습니다');
             }
+
+            const bestRoute = this.selectBestRoute(routes, routeType);
+            this.displayRoute(bestRoute, routeType);
+
+            document.getElementById('routeStatus').textContent = '경로 생성 완료';
+            this.showToast(`${this.getRouteTypeLabel(routeType)} 경로를 찾았습니다!`, 'success');
+
         } catch (error) {
             console.error('Route calculation error:', error);
             this.showToast('경로 계산 중 오류가 발생했습니다', 'error');
@@ -309,31 +1063,79 @@ class SensmapApp {
         }
     }
 
-    // Among multiple possible routes, selects the one with the lowest sensory intensity
-    // 여러 개의 경로 중 감각 자극이 가장 낮은 경로를 선택합니다. 감각 데이터를 기반으로 경로의 쾌적도를 평가합니다.
-    selectBestRoute(routes) {
+    getRouteTypeLabel(routeType) {
+        switch (routeType) {
+            case 'sensory': return '감각 친화적';
+            case 'balanced': return '균형잡힌';
+            case 'time': return '시간 우선';
+            default: return '최적';
+        }
+    }
+
+    async getRouteAlternatives(start, end) {
+        try {
+            const url = `https://router.project-osrm.org/route/v1/walking/${start.lng},${start.lat};${end.lng},${end.lat}?overview=full&geometries=geojson&alternatives=true`;
+
+            const response = await fetch(url);
+            const data = await response.json();
+
+            if (data.routes && data.routes.length > 0) {
+                return data.routes;
+            }
+
+            throw new Error('No routes found');
+        } catch (error) {
+            console.warn('OSRM failed, using fallback:', error);
+            return [{
+                geometry: {
+                    coordinates: [[start.lng, start.lat], [end.lng, end.lat]]
+                },
+                distance: start.distanceTo(end),
+                duration: start.distanceTo(end) / 1.4, // Approximate walking speed of 1.4 m/s
+            }];
+        }
+    }
+
+    selectBestRoute(routes, routeType) {
         const profile = this.getSensitivityProfile();
         let bestRoute = routes[0];
         let bestScore = Infinity;
 
+        const walkingSpeed = 1.1;
+
         routes.forEach(route => {
             const sensoryScore = this.calculateRouteSensoryScore(route.geometry, profile);
-            const distance = route.distance;
-            
-            // Weighted score: 30% distance, 70% comfort
-            const totalScore = (distance * 0.0003) + (sensoryScore * 0.7);
-            
+            const time = route.distance / walkingSpeed;
+
+            let totalScore;
+
+            switch (routeType) {
+                case 'sensory':
+                    totalScore = (sensoryScore * 0.7) + (time * 0.0003);
+                    break;
+                case 'balanced':
+                    totalScore = (sensoryScore * 0.5) + (time * 0.0005);
+                    break;
+                case 'time':
+                    totalScore = (time * 0.0008) + (sensoryScore * 0.2);
+                    break;
+                default:
+                    totalScore = (sensoryScore * 0.5) + (time * 0.0005);
+            }
+
             if (totalScore < bestScore) {
                 bestScore = totalScore;
                 bestRoute = route;
+                bestRoute.routeType = routeType;
+                bestRoute.sensoryScore = sensoryScore;
+                bestRoute.totalScore = totalScore;
+                bestRoute.duration = time;
             }
         });
 
         return bestRoute;
     }
 
-    // Calculates the total sensory score for a given route by summing up the intensity of grid cells along the path.
-    // 주어진 경로를 따라 지나가는 격자 셀의 감각 자극 강도를 합산하여 전체 감각 점수를 계산합니다. 점수가 낮을수록 더 쾌적한 경로로 간주됩니다.
     calculateRouteSensoryScore(geometry, profile) {
         let totalScore = 0;
         let segmentCount = 0;
@@ -344,7 +1146,7 @@ class SensmapApp {
             const gridKey = this.getGridKey(point);
             const cellData = this.gridData.get(gridKey);
 
-            let segmentScore = 2.5; // Neutral score for unknown areas
+            let segmentScore = 2.5;
 
             if (cellData && cellData.reports && cellData.reports.length > 0) {
                 const currentTime = Date.now();
@@ -353,7 +1155,7 @@ class SensmapApp {
 
                 cellData.reports.forEach(report => {
                     const timeDecay = this.calculateTimeDecay(report.timestamp, report.type, currentTime);
-                    if (timeDecay > 0.1) { // Only consider non-expired data
+                    if (timeDecay > 0.1) {
                         const weight = timeDecay;
                         const reportScore = this.calculatePersonalizedScore(report, profile);
                         weightedScore += reportScore * weight;
@@ -373,15 +1175,28 @@ class SensmapApp {
         return segmentCount > 0 ? totalScore / segmentCount : 2.5;
     }
 
-    // Displays the selected route on the map using a polyline.
-    // 선택된 경로를 지도에 폴리라인으로 표시합니다. 이전에 표시된 경로가 있다면 제거한 후 새 경로를 시각화합니다.
-    displayRoute(route) {
+    displayRoute(route, routeType) {
         if (this.currentRoute) {
             this.map.removeLayer(this.currentRoute);
         }
 
+        let routeColor;
+        switch (routeType) {
+            case 'sensory':
+                routeColor = '#10b981';
+                break;
+            case 'balanced':
+                routeColor = '#f59e0b';
+                break;
+            case 'time':
+                routeColor = '#3b82f6';
+                break;
+            default:
+                routeColor = '#1a73e8';
+        }
+
         const routeStyle = {
-            color: '#1a73e8',
+            color: routeColor,
             weight: 6,
             opacity: 0.8,
             lineJoin: 'round',
@@ -392,95 +1207,145 @@ class SensmapApp {
             style: routeStyle
         }).addTo(this.map);
 
-        const distanceInKm = route.distance / 1000;
-        const estimatedDuration = Math.round((distanceInKm / 4.8) * 60); // 4.8 km/h is the average walking speed
+        const distanceInKm = (route.distance || 1000) / 1000;
+        const estimatedDuration = Math.round(((route.duration || 600) / 60));
+        const routeTypeLabel = this.getRouteTypeLabel(routeType);
+        const sensoryScore = route.sensoryScore || 5;
 
         this.currentRoute.bindPopup(`
-                <div class="popup-header">
-                    <div class="popup-title">최적 경로</div>
-                    <div class="popup-subtitle">감각 친화적 경로</div>
+            <div class="popup-header" style="background: ${routeColor};">
+                <div class="popup-title">${routeTypeLabel} 경로</div>
+            </div>
+            <div style="padding: 12px 16px;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                    <span>거리:</span>
+                    <strong>${distanceInKm.toFixed(1)}km</strong>
                 </div>
-                <div style="padding: 12px 0;">
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-                        <span>거리:</span>
-                        <strong>${distanceInKm.toFixed(1)}km</strong>
-                    </div>
-                    <div style="display: flex; justify-content: space-between;">
-                        <span>예상 시간:</span>
-                        <strong>${estimatedDuration}분</strong>
-                    </div>
+                <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                    <span>예상 시간:</span>
+                    <strong>${estimatedDuration}분</strong>
                 </div>
-            `);
+                <div style="display: flex; justify-content: space-between;">
+                    <span>쾌적도:</span>
+                    <strong style="color: ${sensoryScore > 7 ? '#ef4444' : sensoryScore > 5 ? '#f59e0b' : '#10b981'}">
+                        ${(10 - sensoryScore).toFixed(1)}/10
+                    </strong>
+                </div>
+            </div>
+        `).openPopup();
 
-        // Fit map to route
         this.map.fitBounds(this.currentRoute.getBounds(), { padding: [50, 50] });
     }
 
-    // Displays a popup on the map at the clicked location showing sensory data for that grid cell.
-    // 클릭한 위치의 격자 셀에 대한 감각 데이터를 팝업으로 지도에 표시합니다. 사용자가 정보를 확인하고 입력할 수 있도록 합니다.
+    selectRouteType(routeType) {
+        this.calculateRoute(routeType);
+    }
+
+    handleMapClick(e) {
+        if (this.isRouteMode) {
+            this.handleRouteClick(e.latlng); 
+            return;
+        }
+
+        this.clickedLocation = e.latlng;
+        const gridKey = this.getGridKey(e.latlng);
+        const cellData = this.gridData.get(gridKey);
+
+        this.showLocationPopup(e.latlng, gridKey, cellData);
+    }
+
+    handleRouteClick(latlng) {
+        if (!this.routePoints.start) {
+            this.setRoutePoint('start', latlng);
+        } else if (!this.routePoints.end) {
+            this.setRoutePoint('end', latlng);
+            this.showRouteOptions();
+        }
+    }
+
+    setRoutePoint(type, latlng) {
+        if (this.routeMarkers[type]) {
+            this.map.removeLayer(this.routeMarkers[type]);
+        }
+
+        this.routePoints[type] = latlng;
+
+        const iconColor = type === 'start' ? '#10b981' : '#ef4444';
+        const icon = L.divIcon({
+            className: 'route-marker',
+            html: `<div style="background: ${iconColor}; width: 20px; height: 20px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.3); animation: pulseMarker 2s ease-in-out infinite;"></div>`,
+            iconSize: [20, 20],
+            iconAnchor: [10, 10]
+        });
+
+        this.routeMarkers[type] = L.marker(latlng, { icon }).addTo(this.map);
+
+        const status = type === 'start' ? '도착지 선택' : '경로 유형 선택';
+        document.getElementById('routeStatus').textContent = status;
+
+        if (this.routePoints.start && this.routePoints.end) {
+            this.showRouteOptions();
+        }
+    }
+
+    showRouteOptions() {
+        document.getElementById('routeOptions').style.display = 'flex';
+    }
+
     showLocationPopup(latlng, gridKey, cellData) {
         const hasData = cellData && cellData.reports && cellData.reports.length > 0;
-        
+
         let popupContent = `
-            <div class="custom-popup">
-                <div class="popup-header">
-                    <div class="popup-title">위치 정보</div>
-                    <div class="popup-subtitle">좌표: ${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}</div>
-                </div>
-                
-                <div class="action-grid">
-                    <button class="action-btn start" data-type="start" data-lat="${latlng.lat}" data-lng="${latlng.lng}">
-                        <i class="fas fa-play"></i> 출발
-                    </button>
-                    <button class="action-btn end" data-type="end" data-lat="${latlng.lat}" data-lng="${latlng.lng}">
-                        <i class="fas fa-flag-checkered"></i> 도착
-                    </button>
-                </div>
-                
-                <button class="action-btn add" onclick="window.sensmapApp.openSensoryPanel()">
-                    <i class="fas fa-plus"></i> ${hasData ? '새 정보 추가' : '감각 정보 등록'}
+            <div class="popup-header">
+                <div class="popup-title">위치 정보</div>
+                <div class="popup-subtitle">좌표: ${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}</div>
+            </div>
+            <div class="action-grid">
+                <button class="action-btn start" onclick="window.sensmapApp.setRoutePointFromPopup(${latlng.lat}, ${latlng.lng}, 'start')">
+                    <i class="fas fa-play"></i>출발
                 </button>
+                <button class="action-btn end" onclick="window.sensmapApp.setRoutePointFromPopup(${latlng.lat}, ${latlng.lng}, 'end')">
+                    <i class="fas fa-flag-checkered"></i>도착
+                </button>
+            </div>
+            <button class="action-btn add" onclick="window.sensmapApp.openSensoryPanel()">
+                <i class="fas fa-plus"></i> ${hasData ? '정보 추가' : '감각 정보 등록'}
+            </button>
         `;
 
         if (hasData) {
-            popupContent += `
-                <div class="data-summary">
-                    <div class="summary-title">등록된 정보 (${cellData.reports.length}개)</div>
-            `;
-            
-            cellData.reports.slice(0, 3).forEach((report, index) => {
+            popupContent += `<div class="data-summary">
+                <div class="summary-title">등록된 감각 정보 (${cellData.reports.length}개)</div>`;
+
+            const sortedReports = [...cellData.reports].sort((a, b) => b.timestamp - a.timestamp);
+
+            sortedReports.slice(0, 3).forEach((report) => {
                 const timeAgo = this.getTimeAgo(report.timestamp);
-                const typeLabel = report.type === 'irregular' ? '⚡' : '🏢';
-                
+                const typeLabel = report.type === 'irregular' ? '⚡ 일시적' : '🏢 지속적';
+
                 popupContent += `
                     <div class="data-item">
                         <div>
+                            <div style="font-size: 10px; color: #6b7280;">${typeLabel} &middot; ${timeAgo}</div>
                             <div class="data-values">
-                                <span class="data-badge">소음 ${report.noise}</span>
-                                <span class="data-badge">빛 ${report.light}</span>
-                                <span class="data-badge">냄새 ${report.odor}</span>
-                                <span class="data-badge">혼잡 ${report.crowd}</span>
-                                ${report.wheelchair ? '<span class="data-badge">♿</span>' : ''}
-                            </div>
-                            <div style="font-size: 10px; color: #6b7280; margin-top: 2px;">
-                                ${typeLabel} ${timeAgo}
+                                ${report.noise !== null ? `<span class="data-badge">소음 ${report.noise}</span>` : ''}
+                                ${report.light !== null ? `<span class="data-badge">빛 ${report.light}</span>` : ''}
+                                ${report.odor !== null ? `<span class="data-badge">냄새 ${report.odor}</span>` : ''}
+                                ${report.crowd !== null ? `<span class="data-badge">혼잡 ${report.crowd}</span>` : ''}
+                                ${report.wheelchair ? `<span class="data-badge">♿</span>` : ''}
                             </div>
                         </div>
-                        <button class="delete-btn" onclick="window.sensmapApp.deleteReport('${gridKey}', ${report.id})">
-                            삭제
-                        </button>
+                        ${!this.isOfflineMode ? `<button class="delete-btn" onclick="window.sensmapApp.deleteReport('${gridKey}', ${report.id})">삭제</button>` : ''}
                     </div>
                 `;
             });
-            
+
             if (cellData.reports.length > 3) {
                 popupContent += `<div style="text-align: center; font-size: 11px; color: #6b7280; margin-top: 8px;">+${cellData.reports.length - 3}개 더</div>`;
             }
-            
+
             popupContent += `</div>`;
         }
-
-        popupContent += `</div>`;
 
         const popup = L.popup({
             maxWidth: 300,
@@ -489,619 +1354,74 @@ class SensmapApp {
         .setLatLng(latlng)
         .setContent(popupContent)
         .openOn(this.map);
-
-        // Add event listeners to popup buttons
-        setTimeout(() => {
-            document.querySelectorAll('.action-btn.start, .action-btn.end').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    const type = btn.dataset.type;
-                    const lat = parseFloat(btn.dataset.lat);
-                    const lng = parseFloat(btn.dataset.lng);
-                    this.setRoutePoint(type, L.latLng(lat, lng));
-                    this.map.closePopup();
-                    if (!this.isRouteMode) {
-                        this.toggleRouteMode();
-                    }
-                });
-            });
-        }, 100);
     }
 
-    // Opens the sensory input panel for users to submit or edit sensory data.
-    // 사용자가 감각 데이터를 입력하거나 수정할 수 있도록 감각 정보 입력 패널을 엽니다.
+    setRoutePointFromPopup(lat, lng, type) {
+        const latlng = L.latLng(lat, lng);
+        if (!this.isRouteMode) {
+            this.toggleRouteMode();
+        }
+        this.setRoutePoint(type, latlng);
+        this.map.closePopup();
+    }
+
     openSensoryPanel() {
         this.closePanels();
-        document.getElementById('sidePanel').classList.add('open');
-    }
+        const panel = document.getElementById('sidePanel');
+        panel.classList.add('open');
+        panel.setAttribute('aria-hidden', 'false');
 
-    // Opens the user profile panel by first closing any open panels, then adding the 'open' class to the profile panel to make it visible.
-    // 사용자 프로필 패널을 열기 위해, 먼저 다른 패널들을 닫고 'profilePanel' 요소에 'open' 클래스를 추가하여 보이도록 만듭니다.
-    openProfilePanel() {
-        this.closePanels();
-        document.getElementById('profilePanel').classList.add('open');
-    }
-
-    // Closes all side panels by removing the 'open' class from each panel element.
-    // 모든 사이드 패널에서 'open' 클래스를 제거하여 패널을 닫습니다.
-    closePanels() {
-        document.querySelectorAll('.side-panel').forEach(panel => {
-            panel.classList.remove('open');
-        });
-    }
-
-    // Toggles the display of sensory data on the map. If data is currently shown, it hides it; if hidden, it shows it again.
-    // 지도에서 감각 데이터를 표시하거나 숨기는 기능입니다. 현재 데이터가 보이면 숨기고 숨겨져 있으면 다시 표시합니다.
-    toggleDataDisplay() {
-        this.showData = !this.showData;
-        const btn = document.getElementById('showDataBtn');
-        
-        if (this.showData) {
-            btn.classList.add('active');
-            btn.querySelector('i').className = 'fas fa-eye';
-            this.refreshVisualization();
-        } else {
-            btn.classList.remove('active');
-            btn.querySelector('i').className = 'fas fa-eye-slash';
-            this.sensoryLayers.clearLayers();
+        const firstInput = panel.querySelector('input, button');
+        if (firstInput) {
+            setTimeout(() => firstInput.focus(), 100);
         }
-    }
 
-    // Toggle route mode on/off; show/hide controls and update UI accordingly.
-    // 경로 모드를 켜거나 끄고, 관련 UI와 컨트롤을 보여주거나 숨깁니다.
-    toggleRouteMode() {
-        this.isRouteMode = !this.isRouteMode;
-        const btn = document.getElementById('routeBtn');
-        const controls = document.getElementById('routeControls');
-        const routeOptions = document.getElementById('routeOptions');
-
-        if (this.isRouteMode) {
-            btn.classList.add('active');
-            controls.classList.add('show');
-            // Show route options immediately when entering route mode
-            routeOptions.style.display = 'flex';
-            document.getElementById('routeStatus').textContent = '경로 유형 선택';
-            this.showToast('경로 유형을 선택하세요', 'info');
-        } else {
-            this.cancelRouteMode();
-        }
-    }
-
-    // Cancel route mode, reset UI and clear all route markers and lines.
-    // 경로 모드를 취소하고 UI를 초기화하며, 모든 경로 마커와 선을 제거합니다.
-    cancelRouteMode() {
-        this.isRouteMode = false;
-        document.getElementById('routeBtn').classList.remove('active');
-        document.getElementById('routeControls').classList.remove('show');
-        
-        // Hide route options
-        const routeOptions = document.getElementById('routeOptions');
-        if (routeOptions) {
-            routeOptions.style.display = 'none';
-        }
-        
-        // Clear route markers and route
-        Object.values(this.routeMarkers).forEach(marker => {
-            if (marker) this.map.removeLayer(marker);
-        });
-        if (this.currentRoute) {
-            this.map.removeLayer(this.currentRoute);
-            this.currentRoute = null;
-        }
-        
-        this.routePoints = { start: null, end: null };
-        this.routeMarkers = { start: null, end: null };
-    }
-
-    // Set the current visualization mode, update button states, and refresh the map display.
-    // 현재 시각화 모드를 설정하고 버튼 상태를 업데이트한 뒤 지도를 다시 그립니다.
-    setVisualizationMode(mode) {
-        this.currentMode = mode;
-        document.querySelectorAll('.mode-btn').forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.mode === mode);
-        });
-        this.refreshVisualization();
-    }
-
-    // Handle submission of sensory data form, gather input values, and prepare report data.
-    // 감각 정보 폼 제출을 처리하고 입력값을 수집하여 보고서 데이터를 준비합니다.
-    handleSensorySubmit(e) {
-        e.preventDefault();
-        if (!this.clickedLocation) return;
-
-        const formData = new FormData(e.target);
-        const selectedType = document.querySelector('.type-option.selected').dataset.type;
-        
-        const reportData = {
-            id: Date.now(),
-            timestamp: Date.now(),
-            type: selectedType,
-            noise: parseInt(formData.get('noise')),
-            light: parseInt(formData.get('light')),
-            odor: parseInt(formData.get('odor')),
-            crowd: parseInt(formData.get('crowd')),
-            wheelchair: formData.get('wheelchair') === 'on',
-            location: {
-                lat: this.clickedLocation.lat,
-                lng: this.clickedLocation.lng
-            }
-        };
-
-        this.addSensoryData(this.clickedLocation, reportData);
-        
-        // Reset form and close panel
-        e.target.reset();
-        document.querySelectorAll('.range-slider').forEach(slider => {
-            slider.parentNode.querySelector('.range-value').textContent = slider.value;
-        });
-        document.querySelectorAll('.type-option').forEach(o => o.classList.remove('selected'));
-        document.querySelector('.type-option[data-type="irregular"]').classList.add('selected');
-        
-        this.closePanels();
         this.map.closePopup();
-        this.clickedLocation = null;
-        
-        this.showToast('감각 정보가 저장되었습니다!', 'success');
     }
 
-    // Handle profile form submission, save updated sensitivity thresholds, and refresh visualization.
-    // 프로필 폼 제출을 처리하고, 감각 임계값을 저장한 후 시각화를 갱신합니다.
-    handleProfileSubmit(e) {
-        e.preventDefault();
-        const formData = new FormData(e.target);
-        
-        const profileData = {
-            noiseThreshold: parseInt(formData.get('noiseThreshold')),
-            lightThreshold: parseInt(formData.get('lightThreshold')),
-            odorThreshold: parseInt(formData.get('odorThreshold')),
-            crowdThreshold: parseInt(formData.get('crowdThreshold'))
-        };
-
-        this.saveSensitivityProfile(profileData);
-        this.closePanels();
-        this.refreshVisualization();
-        this.showToast('감각 프로필이 업데이트되었습니다!', 'success');
-    }
-
-    // Add new sensory report data to the grid cell corresponding to the given location.
-    // 위치에 해당하는 그리드 셀에 새로운 감각 보고 데이터를 추가합니다.
-    addSensoryData(latlng, reportData) {
-        const gridKey = this.getGridKey(latlng);
-        
-        if (!this.gridData.has(gridKey)) {
-            this.gridData.set(gridKey, {
-                reports: [],
-                bounds: this.getGridBounds(gridKey)
-            });
-        }
-
-        const cellData = this.gridData.get(gridKey);
-        cellData.reports.push(reportData);
-        
-        this.saveGridData();
-        this.refreshVisualization();
-    }
-
-    // Delete a specific sensory report from a grid cell after user confirmation.
-    // 사용자 확인 후 특정 그리드 셀에서 감각 보고를 삭제합니다.
-    deleteReport(gridKey, reportId) {
-        if (!confirm('이 감각 정보를 삭제하시겠습니까?')) return;
-
-        const cellData = this.gridData.get(gridKey);
-        if (!cellData) return;
-
-        cellData.reports = cellData.reports.filter(report => report.id !== reportId);
-        
-        if (cellData.reports.length === 0) {
-            this.gridData.delete(gridKey);
-        }
-
-        this.saveGridData();
-        this.refreshVisualization();
-        this.map.closePopup();
-        this.showToast('감각 정보가 삭제되었습니다', 'success');
-    }
-
-    // Refreshes the sensory data visualization on the map.
-    // 지도 위에 감각 데이터 시각화를 갱신합니다.
-    refreshVisualization() {
-        if (!this.showData) return;
-
-        this.sensoryLayers.clearLayers();
-        const profile = this.getSensitivityProfile();
-        const intensity = parseFloat(document.getElementById('intensitySlider').value);
-        const currentTime = Date.now();
-
-        this.gridData.forEach((cellData, gridKey) => {
-            if (!cellData.reports || cellData.reports.length === 0) return;
-
-            // Calculate current weighted averages with time decay
-            let totalWeight = 0;
-            let weightedScores = { noise: 0, light: 0, odor: 0, crowd: 0 };
-            let hasWheelchairIssue = false;
-
-            cellData.reports.forEach(report => {
-                const timeDecay = this.calculateTimeDecay(report.timestamp, report.type, currentTime);
-                
-                if (timeDecay > 0.1) { // Only consider non-expired data
-                    const weight = timeDecay;
-                    weightedScores.noise += report.noise * weight;
-                    weightedScores.light += report.light * weight;
-                    weightedScores.odor += report.odor * weight;
-                    weightedScores.crowd += report.crowd * weight;
-                    totalWeight += weight;
-                    
-                    if (report.wheelchair) hasWheelchairIssue = true;
-                }
-            });
-
-            if (totalWeight === 0) return; // No valid data
-
-            // Normalize weighted scores
-            Object.keys(weightedScores).forEach(key => {
-                weightedScores[key] /= totalWeight;
-            });
-
-            const personalizedScore = this.calculatePersonalizedScore(weightedScores, profile);
-            this.createVisualizationMarker(gridKey, weightedScores, personalizedScore, hasWheelchairIssue, intensity);
-        });
-    }
-
-    // Calculates the decay factor for a report's timestamp to reduce its influence over time.
-    // 시간이 지남에 따라 보고서의 영향력을 줄이기 위한 감소 계수를 계산합니다.
-    calculateTimeDecay(timestamp, type, currentTime) {
-        const ageMs = currentTime - timestamp;
-        const ageHours = ageMs / (1000 * 60 * 60);
-
-        // Different decay rates for different types
-        let maxAge, decayRate;
-        
-        if (type === 'irregular') {
-            maxAge = 6; // 6 hours
-            decayRate = 0.8; // Faster decay
-        } else {
-            maxAge = 168; // 1 week
-            decayRate = 0.3; // Slower decay
-        }
-
-        if (ageHours >= maxAge) return 0;
-        
-        // Exponential decay
-        return Math.exp(-decayRate * (ageHours / maxAge));
-    }
-
-    // Calculates a personalized comfort score by weighting sensory data according to the user's profile thresholds.
-    // 사용자의 프로필 임계값에 따라 감각 데이터를 가중하여 개인화된 쾌적 점수를 계산합니다.
-    calculatePersonalizedScore(sensoryData, profile) {
-        const weights = {
-            noise: profile.noiseThreshold / 10,
-            light: profile.lightThreshold / 10,
-            odor: profile.odorThreshold / 10,
-            crowd: profile.crowdThreshold / 10
-        };
-
-        let totalScore = 0;
-        let totalWeight = 0;
-
-        Object.keys(weights).forEach(key => {
-            if (sensoryData[key] !== undefined) {
-                totalScore += sensoryData[key] * weights[key];
-                totalWeight += weights[key];
-            }
-        });
-
-        return totalWeight > 0 ? totalScore / totalWeight : 0;
-    }
-
-    // Creates and adds a visualization marker on the map based on the current mode and sensory data.
-    // 현재 모드와 감각 데이터를 기반으로 지도에 시각화 마커를 생성하고 추가합니다.
-    createVisualizationMarker(gridKey, sensoryData, personalizedScore, hasWheelchairIssue, intensity) {
-        const bounds = this.getGridBounds(gridKey);
-        const center = bounds.getCenter();
-
-        let marker;
-        
-        switch (this.currentMode) {
-            case 'intensity':
-                marker = this.createIntensityMarker(center, sensoryData, intensity);
-                break;
-            case 'gradient':
-                marker = this.createGradientMarker(center, personalizedScore, intensity);
-                break;
-            default: // comfort
-                marker = this.createComfortMarker(center, personalizedScore, hasWheelchairIssue, intensity);
-        }
-
-        if (marker) {
-            marker.on('click', () => {
-                this.showLocationPopup(center, gridKey, this.gridData.get(gridKey));
-            });
-            this.sensoryLayers.addLayer(marker);
-        }
-    }
-
-    // Creates a comfort-mode marker representing sensory comfort level on the map.
-    // 감각 편안함 수준을 지도에 나타내는 마커를 생성합니다.
-    createComfortMarker(center, score, hasWheelchairIssue, intensity) {
-        // Color based on comfort score (inverted - lower score = better = green)
-        const normalizedScore = Math.max(0, Math.min(10, score));
-        const hue = (10 - normalizedScore) * 12; // 0 (red) to 120 (green)
-        const color = `hsl(${hue}, 70%, 50%)`;
-        
-        const size = 15 + (normalizedScore * 2) * intensity;
-        
-        const icon = L.divIcon({
-            className: 'sensory-marker',
-            html: `
-                <div style="
-                    width: ${size}px; 
-                    height: ${size}px; 
-                    background: ${color}; 
-                    border-radius: 50%; 
-                    border: 2px solid white; 
-                    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    color: white;
-                    font-size: ${Math.max(8, size * 0.4)}px;
-                    font-weight: bold;
-                ">
-                    ${hasWheelchairIssue ? '♿' : Math.round(score)}
-                </div>
-            `,
-            iconSize: [size, size],
-            iconAnchor: [size/2, size/2]
-        });
-
-        return L.marker(center, { icon });
-    }
-
-    // Creates a marker visualizing the most intense sensory input at a location.
-    // 감각 자극 중 가장 강한 요소를 시각화하는 마커를 생성합니다.
-    createIntensityMarker(center, sensoryData, intensity) {
-        const maxValue = Math.max(sensoryData.noise, sensoryData.light, sensoryData.odor, sensoryData.crowd);
-        const colors = {
-            noise: '#ff4757',
-            light: '#ffa502',
-            odor: '#2ed573',
-            crowd: '#1e90ff'
-        };
-        
-        const dominantSense = Object.keys(sensoryData).reduce((a, b) =>
-            sensoryData[a] > sensoryData[b] ? a : b
-        );
-        
-        const size = 12 + (maxValue * 2) * intensity;
-        const color = colors[dominantSense];
-        
-        const icon = L.divIcon({
-            className: 'sensory-marker',
-            html: `
-                <div style="
-                    width: ${size}px; 
-                    height: ${size}px; 
-                    background: ${color}; 
-                    border-radius: 50%; 
-                    border: 2px solid white; 
-                    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-                    opacity: ${0.6 + (maxValue / 10) * 0.4};
-                "></div>
-            `,
-            iconSize: [size, size],
-            iconAnchor: [size/2, size/2]
-        });
-
-        return L.marker(center, { icon });
-    }
-
-    // Create a gradient marker based on discomfort score and intensity.
-    // 불편 점수와 강도(intensity)에 따라 그라디언트 마커를 생성합니다.
-    createGradientMarker(center, score, intensity) {
-        const size = 20 + (score * 1.5) * intensity;
-        const normalizedScore = Math.max(0, Math.min(10, score));
-        
-        // Create gradient from comfortable (blue) to uncomfortable (red)
-        const startColor = `hsl(${240 - (normalizedScore * 24)}, 70%, 60%)`;
-        const endColor = `hsl(${240 - (normalizedScore * 24)}, 70%, 30%)`;
-        
-        const icon = L.divIcon({
-            className: 'gradient-marker',
-            html: `
-                <div style="
-                    width: ${size}px; 
-                    height: ${size}px; 
-                    background: radial-gradient(circle, ${startColor}, ${endColor});
-                    border-radius: 50%; 
-                    border: 2px solid white; 
-                    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-                    opacity: ${0.7 * intensity};
-                "></div>
-            `,
-            iconSize: [size, size],
-            iconAnchor: [size/2, size/2]
-        });
-
-        return L.marker(center, { icon });
-    }
-
-    // Cleans up old sensory data by removing reports that have fully decayed over time.
-    // 시간이 지나 영향력이 사라진 감각 데이터를 삭제하여 데이터를 정리합니다.
-    cleanupExpiredData() {
-        const currentTime = Date.now();
-        let hasChanges = false;
-
-        this.gridData.forEach((cellData, gridKey) => {
-            const validReports = cellData.reports.filter(report => {
-                const timeDecay = this.calculateTimeDecay(report.timestamp, report.type, currentTime);
-                return timeDecay > 0;
-            });
-
-            if (validReports.length !== cellData.reports.length) {
-                hasChanges = true;
-                if (validReports.length === 0) {
-                    this.gridData.delete(gridKey);
-                } else {
-                    cellData.reports = validReports;
-                }
-            }
-        });
-
-        if (hasChanges) {
-            this.saveGridData();
-            this.refreshVisualization();
-        }
-    }
-
-    // Converts latitude and longitude to a unique grid key based on map projection and cell size.
-    // 위도와 경도를 지도 투영 및 셀 크기를 기준으로 고유한 그리드 키로 변환합니다.
-    getGridKey(latlng) {
-        const projected = L.CRS.EPSG3857.project(latlng);
-        const x = Math.floor(projected.x / this.GRID_CELL_SIZE);
-        const y = Math.floor(projected.y / this.GRID_CELL_SIZE);
-        return `${x},${y}`;
-    }
-
-    // Returns the geographical bounds of a grid cell based on its key.
-    // 그리드 키를 기준으로 해당 셀의 지리적 경계 범위를 반환합니다.
-    getGridBounds(gridKey) {
-        const [x, y] = gridKey.split(',').map(Number);
-        const p1 = L.point(x * this.GRID_CELL_SIZE, y * this.GRID_CELL_SIZE);
-        const p2 = L.point((x + 1) * this.GRID_CELL_SIZE, (y + 1) * this.GRID_CELL_SIZE);
-        return L.latLngBounds(
-            L.CRS.EPSG3857.unproject(p1),
-            L.CRS.EPSG3857.unproject(p2)
-        );
-    }
-
-    // Retrieves the user's saved sensory sensitivity profile from local storage.
-    // 로컬 스토리지에서 사용자의 감각 민감도 프로필을 불러옵니다.
-    getSensitivityProfile() {
-        const saved = JSON.parse(localStorage.getItem('sensoryProfile') || '{}');
-        return {
-            noiseThreshold: saved.noiseThreshold || 5,
-            lightThreshold: saved.lightThreshold || 5,
-            odorThreshold: saved.odorThreshold || 5,
-            crowdThreshold: saved.crowdThreshold || 5
-        };
-    }
-
-    // Saves the user's sensory sensitivity profile to local storage.
-    // 사용자의 감각 민감도 프로필을 로컬 스토리지에 저장합니다.
-    saveSensitivityProfile(profile) {
-        localStorage.setItem('sensoryProfile', JSON.stringify(profile));
-    }
-
-    // Saves the current grid sensory data to local storage for persistence.
-    // 현재 그리드 감각 데이터를 로컬 스토리지에 저장하여 데이터를 유지합니다.
-    saveGridData() {
-        const dataToSave = Array.from(this.gridData.entries());
-        localStorage.setItem('gridData', JSON.stringify(dataToSave));
-    }
-
-    // Loads saved grid data and user sensory profile from local storage, then updates the UI and visualization accordingly.
-    // 저장된 그리드 데이터와 사용자 감각 프로필을 로컬 스토리지에서 불러와 UI와 시각화를 업데이트합니다.
-    loadSavedData() {
+    createAdditionEffect(latlng, type) {
         try {
-            // Load grid data
-            const savedGridData = localStorage.getItem('gridData');
-            if (savedGridData) {
-                const data = JSON.parse(savedGridData);
-                this.gridData = new Map(data);
-            }
+            const mapContainer = document.getElementById('map');
+            const point = this.map.latLngToContainerPoint(latlng);
 
-            // Load and apply profile
-            const savedProfile = this.getSensitivityProfile();
-            const profileForm = document.getElementById('profileForm');
-            Object.entries(savedProfile).forEach(([key, value]) => {
-                const input = profileForm.querySelector(`[name="${key}"]`);
-                if (input) {
-                    input.value = value;
-                    input.parentNode.querySelector('.range-value').textContent = value;
-                }
+            const effect = document.createElement('div');
+            effect.style.cssText = `
+                position: absolute;
+                left: ${point.x}px;
+                top: ${point.y}px;
+                width: 20px;
+                height: 20px;
+                background: ${type === 'irregular' ? '#fbbf24' : '#3b82f6'};
+                border-radius: 50%;
+                pointer-events: none;
+                z-index: 600;
+                transform: translate(-50%, -50%);
+                box-shadow: 0 0 20px currentColor;
+                opacity: 0.8;
+            `;
+
+            const animation = effect.animate([
+                { transform: 'translate(-50%, -50%) scale(0.5)', opacity: 1 },
+                { transform: 'translate(-50%, -50%) scale(2.5)', opacity: 0 }
+            ], {
+                duration: 700,
+                easing: 'ease-out'
             });
 
-            this.refreshVisualization();
-        } catch (error) {
-            console.error('Error loading saved data:', error);
-        }
-    }
-
-    // Attempts to get the user's current location and center the map there, showing a success or error message accordingly.
-    // 사용자의 현재 위치를 받아 지도 중심을 이동시키고, 성공 또는 오류 메시지를 표시합니다.
-    setupGeolocation() {
-        if ('geolocation' in navigator) {
-            const options = {
-                enableHighAccuracy: true,
-                timeout: 10000,
-                maximumAge: 60000
+            animation.onfinish = () => {
+                if (effect.parentNode) {
+                    effect.parentNode.removeChild(effect);
+                }
             };
-            
-            navigator.geolocation.getCurrentPosition(
-                (position) => {
-                    const { latitude, longitude } = position.coords;
-                    this.map.setView([latitude, longitude], 16);
-                    this.showToast('현재 위치로 이동했습니다', 'success');
-                },
-                (error) => {
-                    console.log('Geolocation error:', error);
-                    
-                    // Handle different types of geolocation errors
-                    let errorMessage = '위치 정보를 가져올 수 없습니다';
-                    
-                    switch (error.code) {
-                        case error.PERMISSION_DENIED:
-                            errorMessage = '위치 정보 접근이 거부되었습니다. 브라우저 설정에서 위치 정보 접근을 허용해주세요.';
-                            break;
-                        case error.POSITION_UNAVAILABLE:
-                            errorMessage = '위치 정보를 사용할 수 없습니다.';
-                            break;
-                        case error.TIMEOUT:
-                            errorMessage = '위치 정보 요청 시간이 초과되었습니다.';
-                            break;
-                        default:
-                            errorMessage = '위치 정보를 가져오는 중 오류가 발생했습니다.';
-                    }
-                    
-                    // Show a less intrusive message for geolocation errors
-                    console.log(errorMessage);
-                    // Don't show toast for geolocation errors as they're common and expected
-                },
-                options
-            );
-        } else {
-            console.log('Geolocation is not supported by this browser');
+
+            mapContainer.appendChild(effect);
+
+        } catch (error) {
+            console.warn('이펙트 생성 실패:', error);
         }
     }
 
-    // Converts a timestamp to a human-readable relative time string like "___ hours ago" in Korean.
-    // 타임스탬프를 받아 "몇 시간 전"과 같은 사람이 읽기 쉬운 상대 시간 문자열로 변환합니다.
-    getTimeAgo(timestamp) {
-        const now = Date.now();
-        const diff = now - timestamp;
-        const minutes = Math.floor(diff / (1000 * 60));
-        const hours = Math.floor(diff / (1000 * 60 * 60));
-        const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-
-        if (days > 0) return `${days}일 전`;
-        if (hours > 0) return `${hours}시간 전`;
-        if (minutes > 0) return `${minutes}분 전`;
-        return '방금 전';
-    }
-
-    // Displays a temporary toast message on the screen with a specific style based on the type.
-    // 화면에 특정 타입에 따라 스타일이 적용된 임시 토스트 메시지를 표시합니다.
-    showToast(message, type = 'info') {
-        const toast = document.getElementById('toast');
-        toast.textContent = message;
-        toast.className = `toast show ${type}`;
-        
-        setTimeout(() => {
-            toast.classList.remove('show');
-        }, 3000);
-    }
-
-    // Tutorial functionality
-    // 튜토리얼 기능
+    // Tutorial methods
     currentTutorialStep = 1;
     totalTutorialSteps = 4;
 
@@ -1122,25 +1442,21 @@ class SensmapApp {
     }
 
     updateTutorialStep() {
-        // Update step visibility
         document.querySelectorAll('.tutorial-step').forEach((step, index) => {
             step.classList.toggle('active', index + 1 === this.currentTutorialStep);
         });
 
-        // Update dots
         document.querySelectorAll('.tutorial-dots .dot').forEach((dot, index) => {
             dot.classList.toggle('active', index + 1 === this.currentTutorialStep);
         });
 
-        // Update button states
         const prevBtn = document.getElementById('tutorialPrev');
         const nextBtn = document.getElementById('tutorialNext');
-        
+
         if (prevBtn) prevBtn.disabled = this.currentTutorialStep === 1;
         if (nextBtn) {
-            nextBtn.textContent = this.currentTutorialStep === this.totalTutorialSteps ? '완료' : '다음';
-            // Enable the button on the last step so it can complete the tutorial
-            nextBtn.disabled = false;
+            const isLastStep = this.currentTutorialStep === this.totalTutorialSteps;
+            nextBtn.textContent = isLastStep ? '완료' : '다음';
         }
     }
 
@@ -1161,59 +1477,24 @@ class SensmapApp {
         localStorage.setItem('tutorialCompleted', 'true');
     }
 
-    // Hamburger menu functionality
-    // 햄버거 메뉴 기능
+    // Utility methods
     toggleHamburgerMenu() {
-        console.log('toggleHamburgerMenu called');
-        
         const btn = document.getElementById('hamburgerBtn');
         const dropdown = document.getElementById('hamburgerDropdown');
-        
-        console.log('Button found:', !!btn);
-        console.log('Dropdown found:', !!dropdown);
-        
-        if (!btn || !dropdown) {
-            console.error('Hamburger menu elements not found');
-            return;
-        }
-        
+
         const isOpen = btn.getAttribute('aria-expanded') === 'true';
-        console.log('Current state - isOpen:', isOpen);
-        
         btn.setAttribute('aria-expanded', !isOpen);
         dropdown.setAttribute('aria-hidden', isOpen);
-        
-        // Actually show/hide the dropdown
-        if (isOpen) {
-            console.log('Closing dropdown');
-            dropdown.style.opacity = '0';
-            dropdown.style.visibility = 'hidden';
-            dropdown.style.transform = 'translateY(-10px)';
-        } else {
-            console.log('Opening dropdown');
-            dropdown.style.opacity = '1';
-            dropdown.style.visibility = 'visible';
-            dropdown.style.transform = 'translateY(0)';
-        }
     }
 
     closeHamburgerMenu() {
         const btn = document.getElementById('hamburgerBtn');
         const dropdown = document.getElementById('hamburgerDropdown');
-        
-        if (!btn || !dropdown) return;
-        
+
         btn.setAttribute('aria-expanded', 'false');
         dropdown.setAttribute('aria-hidden', 'true');
-        
-        // Hide the dropdown
-        dropdown.style.opacity = '0';
-        dropdown.style.visibility = 'hidden';
-        dropdown.style.transform = 'translateY(-10px)';
     }
 
-    // Settings panel functionality
-    // 설정 패널 기능
     openSettingsPanel() {
         this.closePanels();
         const panel = document.getElementById('settingsPanel');
@@ -1225,8 +1506,6 @@ class SensmapApp {
         panel.classList.remove('open');
     }
 
-    // Contact modal functionality
-    // 문의 모달 기능
     openContactModal() {
         const modal = document.getElementById('contactModal');
         modal.classList.add('show');
@@ -1237,153 +1516,108 @@ class SensmapApp {
         modal.classList.remove('show');
     }
 
-    // Route functionality
-    // 경로 기능
-    selectRouteType(type) {
-        // Implementation for route type selection
-        console.log('Route type selected:', type);
-        
-        // Hide route options and show route planning status
-        const routeOptions = document.getElementById('routeOptions');
-        if (routeOptions) {
-            routeOptions.style.display = 'none';
-        }
-        
-        // Update status and show appropriate message
-        const routeStatus = document.getElementById('routeStatus');
-        if (type === 'sensory') {
-            routeStatus.textContent = '감각 우선 모드';
-            this.showToast('감각 친화적 경로를 찾습니다. 출발지를 선택하세요.', 'info');
-        } else if (type === 'time') {
-            routeStatus.textContent = '시간 우선 모드';
-            this.showToast('빠른 경로를 찾습니다. 출발지를 선택하세요.', 'info');
+    openProfilePanel() {
+        this.closePanels();
+        const panel = document.getElementById('profilePanel');
+        panel.classList.add('open');
+        panel.setAttribute('aria-hidden', 'false');
+
+        const firstInput = panel.querySelector('input, button');
+        if (firstInput) {
+            setTimeout(() => firstInput.focus(), 100);
         }
     }
 
-    // Visualization mode switching
-    // 시각화 모드 전환
-    switchVisualization(vizType) {
-        // Remove active class from all viz buttons
-        document.querySelectorAll('.viz-btn').forEach(btn => {
-            btn.classList.remove('active');
+    closePanels() {
+        document.querySelectorAll('.side-panel').forEach(panel => {
+            panel.classList.remove('open');
+            panel.setAttribute('aria-hidden', 'true');
         });
-        
-        // Add active class to clicked button
-        const clickedBtn = document.querySelector(`[data-viz="${vizType}"]`);
-        if (clickedBtn) {
-            clickedBtn.classList.add('active');
-        }
-        
-        // Show toast message
-        const vizName = vizType === 'markers' ? '마커' : '히트맵';
-        this.showToast(`${vizName} 모드로 전환되었습니다`, 'info');
     }
 
-    // Filter mode switching
-    // 필터 모드 전환
-    switchFilter(filterType) {
-        // Remove active class from all filter buttons
-        document.querySelectorAll('.filter-btn').forEach(btn => {
+    toggleDataDisplay() {
+        this.showData = !this.showData;
+        const btn = document.getElementById('showDataBtn');
+
+        if (this.showData) {
+            btn.classList.add('active');
+            btn.setAttribute('aria-pressed', 'true');
+            btn.querySelector('i').className = 'fas fa-eye';
+            this.refreshVisualization();
+        } else {
             btn.classList.remove('active');
-        });
-        
-        // Add active class to clicked button
-        const clickedBtn = document.querySelector(`[data-filter="${filterType}"]`);
-        if (clickedBtn) {
-            clickedBtn.classList.add('active');
-        }
-        
-        // Show toast message
-        let filterName = '모든 데이터';
-        switch (filterType) {
-            case 'noise':
-                filterName = '소음';
-                break;
-            case 'light':
-                filterName = '빛';
-                break;
-            case 'odor':
-                filterName = '냄새';
-                break;
-            case 'crowd':
-                filterName = '혼잡도';
-                break;
-        }
-        this.showToast(`${filterName} 필터가 적용되었습니다`, 'info');
-    }
-
-    rateRoute(rating) {
-        // Implementation for route rating
-        console.log('Route rated:', rating);
-        this.hideRouteRating();
-        this.showToast('경로 평가가 저장되었습니다', 'success');
-    }
-
-    hideRouteRating() {
-        const rating = document.getElementById('routeRating');
-        if (rating) {
-            rating.style.display = 'none';
-        }
-    }
-
-    // Undo functionality
-    // 실행취소 기능
-    undoLastAction() {
-        // Implementation for undo functionality
-        console.log('Undoing last action');
-        this.hideUndoAction();
-        this.showToast('마지막 작업이 취소되었습니다', 'info');
-    }
-
-    hideUndoAction() {
-        const undoAction = document.getElementById('undoAction');
-        if (undoAction) {
-            undoAction.style.display = 'none';
-        }
-    }
-
-    // Alert functionality
-    // 알림 기능
-    hideAlertBanner() {
-        const alertBanner = document.getElementById('alertBanner');
-        if (alertBanner) {
-            alertBanner.style.display = 'none';
-        }
-    }
-
-    // Field skip functionality
-    // 필드 건너뛰기 기능
-    toggleFieldSkip(field) {
-        const formGroup = document.querySelector(`[data-field="${field}"]`);
-        const slider = formGroup?.querySelector('.range-slider');
-        const skipBtn = formGroup?.querySelector('.skip-btn');
-        
-        if (formGroup && slider && skipBtn) {
-            const isSkipped = formGroup.classList.contains('auto-skipped');
-            
-            if (isSkipped) {
-                formGroup.classList.remove('auto-skipped');
-                slider.classList.remove('skipped');
-                skipBtn.classList.remove('active');
-                skipBtn.textContent = '건너뛰기';
-            } else {
-                formGroup.classList.add('auto-skipped');
-                slider.classList.add('skipped');
-                skipBtn.classList.add('active');
-                skipBtn.textContent = '복원';
+            btn.setAttribute('aria-pressed', 'false');
+            btn.querySelector('i').className = 'fas fa-eye-slash';
+            this.sensoryLayers.clearLayers();
+            if (this.heatmapLayer) {
+                this.map.removeLayer(this.heatmapLayer);
+                this.heatmapLayer = null;
             }
         }
     }
 
-    // Data type selection
-    // 데이터 유형 선택
-    selectDataType(option) {
-        document.querySelectorAll('.type-option').forEach(o => o.classList.remove('selected'));
-        option.classList.add('selected');
+    toggleRouteMode() {
+        this.isRouteMode = !this.isRouteMode;
+        const btn = document.getElementById('routeBtn');
+        const controls = document.getElementById('routeControls');
+
+        if (this.isRouteMode) {
+            btn.classList.add('active');
+            controls.classList.add('show');
+            controls.setAttribute('aria-hidden', 'false');
+            document.getElementById('routeStatus').textContent = '출발지 선택';
+            document.getElementById('routeOptions').style.display = 'none';
+            this.showToast('지도를 클릭하여 출발지를 선택하세요', 'info');
+        } else {
+            this.cancelRouteMode();
+        }
     }
 
-    // Accessibility modes
-    // 접근성 모드
+    cancelRouteMode() {
+        this.isRouteMode = false;
+        const btn = document.getElementById('routeBtn');
+        const controls = document.getElementById('routeControls');
+
+        btn.classList.remove('active');
+        controls.classList.remove('show');
+        controls.setAttribute('aria-hidden', 'true');
+
+        Object.values(this.routeMarkers).forEach(marker => {
+            if (marker) this.map.removeLayer(marker);
+        });
+        if (this.currentRoute) {
+            this.map.removeLayer(this.currentRoute);
+            this.currentRoute = null;
+        }
+
+        this.routePoints = { start: null, end: null };
+        this.routeMarkers = { start: null, end: null };
+        document.getElementById('routeOptions').style.display = 'none';
+    }
+
+    handleProfileSubmit(e) {
+        e.preventDefault();
+
+        try {
+            const formData = new FormData(e.target);
+            const profile = {
+                noiseThreshold: parseInt(formData.get('noiseThreshold')),
+                lightThreshold: parseInt(formData.get('lightThreshold')),
+                odorThreshold: parseInt(formData.get('odorThreshold')),
+                crowdThreshold: parseInt(formData.get('crowdThreshold'))
+            };
+
+            localStorage.setItem('sensmap_profile', JSON.stringify(profile));
+            this.closePanels();
+
+            this.showToast('감각 프로필이 저장되었습니다', 'success');
+            this.refreshVisualization();
+
+        } catch (error) {
+            this.handleError('프로필 저장 중 오류가 발생했습니다', error);
+        }
+    }
+
     toggleColorBlindMode(enabled) {
         document.body.classList.toggle('color-blind-mode', enabled);
         localStorage.setItem('colorBlindMode', enabled);
@@ -1404,89 +1638,253 @@ class SensmapApp {
         localStorage.setItem('textSize', size);
     }
 
-    // Error handling
-    // 오류 처리
-    handleError(message, error) {
-        console.error(message, error);
-        this.showToast(message, 'error');
-        this.showErrorBoundary(error);
+    createVisualizationMarker(gridKey, sensoryData, personalizedScore, hasWheelchairIssue, intensity) {
+        const bounds = this.getGridBounds(gridKey);
+        const center = bounds.getCenter();
+
+        const normalizedScore = Math.max(0, Math.min(10, personalizedScore));
+        const hue = (10 - normalizedScore) * 12;
+        const color = `hsl(${hue}, 70%, 50%)`;
+
+        const size = 15 + (normalizedScore * 2) * intensity;
+
+        const icon = L.divIcon({
+            className: 'sensory-marker',
+            html: `
+                <div style="
+                    width: ${size}px;
+                    height: ${size}px;
+                    background: ${color};
+                    border-radius: 50%;
+                    border: 2px solid white;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    color: white;
+                    font-size: ${Math.max(8, size * 0.4)}px;
+                    font-weight: bold;
+                    animation: pulseMarker 2s ease-in-out infinite;
+                ">
+                    ${hasWheelchairIssue ? '♿' : Math.round(personalizedScore)}
+                </div>
+            `,
+            iconSize: [size, size],
+            iconAnchor: [size/2, size/2]
+        });
+
+        const marker = L.marker(center, { icon });
+        marker.on('click', () => {
+            this.showLocationPopup(center, gridKey, this.gridData.get(gridKey));
+        });
+        this.sensoryLayers.addLayer(marker);
     }
 
-    // Load accessibility settings from localStorage
-    // 로컬 스토리지에서 접근성 설정을 불러옵니다
+    getGridKey(latlng) {
+        const x = Math.floor(latlng.lng * 111320 / this.GRID_CELL_SIZE);
+        const y = Math.floor(latlng.lat * 111320 / this.GRID_CELL_SIZE);
+        return `${x},${y}`;
+    }
+
+    getGridBounds(gridKey) {
+        const [x, y] = gridKey.split(',').map(Number);
+        const lng1 = x * this.GRID_CELL_SIZE / 111320;
+        const lat1 = y * this.GRID_CELL_SIZE / 111320;
+        const lng2 = (x + 1) * this.GRID_CELL_SIZE / 111320;
+        const lat2 = (y + 1) * this.GRID_CELL_SIZE / 111320;
+        return L.latLngBounds([lat1, lng1], [lat2, lng2]);
+    }
+
+    getSensitivityProfile() {
+        try {
+            const saved = localStorage.getItem('sensmap_profile');
+            return saved ? JSON.parse(saved) : {
+                noiseThreshold: 5,
+                lightThreshold: 5,
+                odorThreshold: 5,
+                crowdThreshold: 5
+            };
+        } catch (error) {
+            console.warn('프로필 로드 실패:', error);
+            return {
+                noiseThreshold: 5,
+                lightThreshold: 5,
+                odorThreshold: 5,
+                crowdThreshold: 5
+            };
+        }
+    }
+
+    calculateTimeDecay(timestamp, type, currentTime) {
+        const ageMs = currentTime - timestamp;
+        const ageHours = ageMs / (1000 * 60 * 60);
+
+        let maxAge, decayRate;
+
+        if (type === 'irregular') {
+            maxAge = 6;
+            decayRate = 0.8;
+        } else {
+            maxAge = 168;
+            decayRate = 0.3;
+        }
+
+        if (ageHours >= maxAge) return 0;
+
+        return Math.exp(-decayRate * (ageHours / maxAge));
+    }
+
+    calculatePersonalizedScore(sensoryData, profile) {
+        const weights = {
+            noise: profile.noiseThreshold / 10,
+            light: profile.lightThreshold / 10,
+            odor: profile.odorThreshold / 10,
+            crowd: profile.crowdThreshold / 10
+        };
+
+        let totalScore = 0;
+        let totalWeight = 0;
+
+        Object.keys(weights).forEach(key => {
+            if (sensoryData[key] !== undefined && sensoryData[key] !== null) {
+                totalScore += sensoryData[key] * weights[key];
+                totalWeight += weights[key];
+            }
+        });
+
+        return totalWeight > 0 ? totalScore / totalWeight : 0;
+    }
+
+    getTimeAgo(timestamp) {
+        const now = Date.now();
+        const diff = now - timestamp;
+        const minutes = Math.floor(diff / (1000 * 60));
+        const hours = Math.floor(minutes / 60);
+        const days = Math.floor(hours / 24);
+
+        if (days > 0) return `${days}일 전`;
+        if (hours > 0) return `${hours}시간 전`;
+        if (minutes > 0) return `${minutes}분 전`;
+        return '방금 전';
+    }
+
+    loadSavedData() {
+        const profile = this.getSensitivityProfile();
+        Object.keys(profile).forEach(key => {
+            const slider = document.getElementById(key);
+            const valueDisplay = slider?.parentNode?.querySelector('.range-value');
+            if (slider) {
+                slider.value = profile[key];
+                if (valueDisplay) {
+                    valueDisplay.textContent = profile[key];
+                }
+            }
+        });
+    }
+
+    applyAccessibilitySettings() {
+        const colorBlindMode = localStorage.getItem('colorBlindMode') === 'true';
+        const highContrastMode = localStorage.getItem('highContrastMode') === 'true';
+        const reducedMotionMode = localStorage.getItem('reducedMotionMode') === 'true';
+        const textSize = localStorage.getItem('textSize') || '1';
+
+        document.body.classList.toggle('color-blind-mode', colorBlindMode);
+        document.body.classList.toggle('high-contrast-mode', highContrastMode);
+        document.body.classList.toggle('reduced-motion-mode', reducedMotionMode);
+        document.documentElement.style.setProperty('--text-size', `${textSize}rem`);
+    }
+
     loadAccessibilitySettings() {
         try {
-            // Load color blind mode
+            this.loadSavedData();
+
             const colorBlindMode = localStorage.getItem('colorBlindMode') === 'true';
-            const colorBlindCheckbox = document.getElementById('colorBlindMode');
-            if (colorBlindCheckbox) {
-                colorBlindCheckbox.checked = colorBlindMode;
-                this.toggleColorBlindMode(colorBlindMode);
-            }
-
-            // Load high contrast mode
             const highContrastMode = localStorage.getItem('highContrastMode') === 'true';
-            const highContrastCheckbox = document.getElementById('highContrastMode');
-            if (highContrastCheckbox) {
-                highContrastCheckbox.checked = highContrastMode;
-                this.toggleHighContrastMode(highContrastMode);
-            }
-
-            // Load reduced motion mode
             const reducedMotionMode = localStorage.getItem('reducedMotionMode') === 'true';
-            const reducedMotionCheckbox = document.getElementById('reducedMotionMode');
-            if (reducedMotionCheckbox) {
-                reducedMotionCheckbox.checked = reducedMotionMode;
-                this.toggleReducedMotionMode(reducedMotionMode);
-            }
-
-            // Load text size
             const textSize = localStorage.getItem('textSize') || '1';
+
+            const colorBlindCheckbox = document.getElementById('colorBlindMode');
+            const highContrastCheckbox = document.getElementById('highContrastMode');
+            const reducedMotionCheckbox = document.getElementById('reducedMotionMode');
             const textSizeSlider = document.getElementById('textSizeSlider');
-            if (textSizeSlider) {
-                textSizeSlider.value = textSize;
-                this.adjustTextSize(textSize);
-            }
+
+            if (colorBlindCheckbox) colorBlindCheckbox.checked = colorBlindMode;
+            if (highContrastCheckbox) highContrastCheckbox.checked = highContrastMode;
+            if (reducedMotionCheckbox) reducedMotionCheckbox.checked = reducedMotionMode;
+            if (textSizeSlider) textSizeSlider.value = textSize;
+
+            this.applyAccessibilitySettings();
+
         } catch (error) {
-            console.error('Error loading accessibility settings:', error);
+            console.warn('접근성 설정 로드 실패:', error);
         }
     }
 
-    // Check if tutorial has been completed
-    // 튜토리얼 완료 여부를 확인합니다
-    checkTutorialCompletion() {
+    setupGeolocation() {
         try {
-            const tutorialCompleted = localStorage.getItem('tutorialCompleted') === 'true';
-            if (!tutorialCompleted) {
-                // Show tutorial after a short delay
-                setTimeout(() => {
-                    this.showTutorial();
-                }, 1000);
+            if ('geolocation' in navigator) {
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        const { latitude, longitude } = position.coords;
+                        this.map.setView([latitude, longitude], 16);
+                        this.showToast('현재 위치로 이동했습니다', 'success');
+                    },
+                    (error) => {
+                        console.warn('위치 정보 가져오기 실패:', error);
+                    },
+                    { timeout: 10000, maximumAge: 60000 }
+                );
             }
         } catch (error) {
-            console.error('Error checking tutorial completion:', error);
+            console.warn('위치 정보 설정 실패:', error);
         }
     }
 
-    // Initialize hamburger menu state
-    // 햄버거 메뉴 상태를 초기화합니다
+    checkTutorialCompletion() {
+        const completed = localStorage.getItem('tutorialCompleted') === 'true';
+        if (!completed) {
+            setTimeout(() => this.showTutorial(), 1000);
+        }
+    }
+
     initializeHamburgerMenu() {
         const btn = document.getElementById('hamburgerBtn');
         const dropdown = document.getElementById('hamburgerDropdown');
-        
+
         if (btn && dropdown) {
-            // Ensure dropdown starts hidden
             btn.setAttribute('aria-expanded', 'false');
             dropdown.setAttribute('aria-hidden', 'true');
-            dropdown.style.opacity = '0';
-            dropdown.style.visibility = 'hidden';
-            dropdown.style.transform = 'translateY(-10px)';
-            console.log('Hamburger menu initialized');
         }
     }
 
-    // Utility function to throttle function calls
-    // 함수 호출을 제한하는 유틸리티 함수
+    showToast(message, type = 'info') {
+        try {
+            const toast = document.getElementById('toast');
+            if (!toast) return;
+
+            toast.textContent = message;
+            toast.className = `toast show ${type}`;
+
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 4000);
+        } catch (error) {
+            console.warn('토스트 표시 실패:', error);
+        }
+    }
+
+    handleError(message, error) {
+        console.error(message, error);
+        this.showToast(message, 'error');
+
+        if (error && error.name === 'TypeError') {
+            const errorBoundary = document.getElementById('errorBoundary');
+            if (errorBoundary) {
+                errorBoundary.style.display = 'block';
+            }
+        }
+    }
+
     throttle(func, limit) {
         let inThrottle;
         return function() {
@@ -1499,26 +1897,43 @@ class SensmapApp {
             }
         }
     }
+
+    async getAddressFromLatLng(latlng) {
+        try {
+            const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latlng.lat}&lon=${latlng.lng}&zoom=18&addressdetails=1`;
+            const response = await fetch(url, {
+                headers: { 'User-Agent': 'SensmapApp/1.0 (dev@sensmap.app)' }
+            });
+            const data = await response.json();
+
+            if (data.display_name) {
+                return data.display_name.split(',').slice(0, 3).join(',');
+            } else {
+                return `주소 정보 없음 (${latlng.lat.toFixed(4)}, ${latlng.lng.toFixed(4)})`;
+            }
+        } catch (error) {
+            console.error("역지오코딩 오류:", error);
+            return `주소 로드 실패`;
+        }
+    }
 }
 
-// Initialize the application
-try {
-    document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', () => {
+    try {
         window.sensmapApp = new SensmapApp();
-    });
+    } catch (error) {
+        console.error('Failed to initialize SensmapApp:', error);
+        const errorBoundary = document.getElementById('errorBoundary');
+        if (errorBoundary) {
+            errorBoundary.style.display = 'flex';
+        }
+    }
+});
 
-} catch (error) {
-    // If initialization fails, show error boundary
-    const loadingOverlay = document.getElementById('loadingOverlay');
-    const errorBoundary = document.getElementById('errorBoundary');
-    
-    if (loadingOverlay) {
-        loadingOverlay.style.display = 'none';
-    }
-    
-    if (errorBoundary) {
-        errorBoundary.style.display = 'flex';
-    }
-    
-    console.error('Failed to initialize SensmapApp:', error);
-}
+window.addEventListener('error', (e) => {
+    console.error('전역 오류:', e.error);
+});
+
+window.addEventListener('unhandledrejection', (e) => {
+    console.error('처리되지 않은 Promise 거부:', e.reason);
+});
