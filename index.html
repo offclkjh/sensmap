@@ -290,15 +290,34 @@
                 </div>
 
                 <div class="form-group">
-                    <label class="form-label" for="durationInput">예상 지속 시간 (분)</label>
-                    <input type="number" class="duration-input" id="durationInput" name="duration" min="1" max="10080" placeholder="예: 30분, 120분 등">
+                    <label class="form-label" for="durationInput">예상 지속 시간 (30분 단위)</label>
+                    <input type="number" class="duration-input" id="durationInput" name="duration" min="30" max="180" step="30" placeholder="예: 30, 60, 90 ...">
                 </div>
+
 
                 <div class="form-group">
                     <label style="display: flex; align-items: center; gap: 8px; font-size: 14px;">
                         <input type="checkbox" name="wheelchair" id="wheelchairInput">
                         <span>♿ 휠체어 접근 제약</span>
                     </label>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">시간표</label>
+                    <div class="timetable">
+                        <div class="timetable-header">
+                            <div class="timetable-cell"></div>
+                            <div class="timetable-cell">월</div>
+                            <div class="timetable-cell">화</div>
+                            <div class="timetable-cell">수</div>
+                            <div class="timetable-cell">목</div>
+                            <div class="timetable-cell">금</div>
+                            <div class="timetable-cell">토</div>
+                            <div class="timetable-cell">일</div>
+                        </div>
+                        <div class="timetable-body" id="timetableBody">
+                            <!-- JS로 24시간 생성 -->
+                        </div>
+                    </div>
                 </div>
 
                 <button type="submit" class="primary-btn">
