@@ -1628,3 +1628,45 @@ html, body {
         top: 50px;
     }
 }
+
+/* 시간표 스타일 */
+.timetable {
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    overflow: hidden;
+    font-size: 12px;
+    margin-top: 8px;
+}
+
+.timetable-header, .timetable-row {
+    display: grid;
+    grid-template-columns: 50px repeat(7, 1fr);
+}
+
+.timetable-cell {
+    border: 1px solid #e5e7eb;
+    padding: 4px;
+    text-align: center;
+    background: #f9fafb;
+}
+
+.timetable-row .timetable-cell {
+    background: white;
+    color: #374151;
+    cursor: not-allowed; /* 클릭 불가 표시 */
+}
+
+.timetable-hour {
+    background: #f3f4f6;
+    font-weight: 600;
+}
+
+/* 현재 시간 선 */
+.current-time-line {
+    position: absolute;
+    height: 2px;
+    background: red;
+    z-index: 10;
+    pointer-events: none;
+    transition: top 0.2s linear;
+}
