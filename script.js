@@ -420,26 +420,26 @@ class SensmapApp {
     // 클릭한 위치의 격자 셀에 대한 감각 데이터를 팝업으로 지도에 표시합니다. 사용자가 정보를 확인하고 입력할 수 있도록 합니다.
     showLocationPopup(latlng, gridKey, cellData) {
         const hasData = cellData && cellData.reports && cellData.reports.length > 0;
-        
+
         let popupContent = `
-            <div class="custom-popup">
-                <div class="popup-header">
-                    <div class="popup-title">위치 정보</div>
-                    <div class="popup-subtitle">좌표: ${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}</div>
-                </div>
-                
-                <div class="action-grid">
-                    <button class="action-btn start" data-type="start" data-lat="${latlng.lat}" data-lng="${latlng.lng}">
-                        <i class="fas fa-play"></i> 출발
+            <div class="custom-popup" style="display:flex; gap:10px;">
+                <div style="flex:1; min-width:180px;">
+                    <div class="popup-header">
+                        <div class="popup-title">위치 정보</div>
+                        <div class="popup-subtitle">좌표: ${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}</div>
+                    </div>
+
+                    <div class="action-grid">
+                        <button class="action-btn start" data-type="start" data-lat="${latlng.lat}" data-lng="${latlng.lng}">
+                            <i class="fas fa-play"></i> 출발
+                        </button>
+                        <button class="action-btn end" data-type="end" data-lat="${latlng.lat}" data-lng="${latlng.lng}">
+                            <i class="fas fa-flag-checkered"></i> 도착
+                        </button>
+                    </div>
+                    <button class="action-btn add" onclick="window.sensmapApp.openSensoryPanel()">
+                        <i class="fas fa-plus"></i> ${hasData ? '새 정보 추가' : '감각 정보 등록'}
                     </button>
-                    <button class="action-btn end" data-type="end" data-lat="${latlng.lat}" data-lng="${latlng.lng}">
-                        <i class="fas fa-flag-checkered"></i> 도착
-                    </button>
-                </div>
-                
-                <button class="action-btn add" onclick="window.sensmapApp.openSensoryPanel()">
-                    <i class="fas fa-plus"></i> ${hasData ? '새 정보 추가' : '감각 정보 등록'}
-                </button>
         `;
 
         if (hasData) {
@@ -447,72 +447,162 @@ class SensmapApp {
                 <div class="data-summary">
                     <div class="summary-title">등록된 정보 (${cellData.reports.length}개)</div>
             `;
-            
-            cellData.reports.slice(0, 3).forEach((report, index) => {
-                const timeAgo = this.getTimeAgo(report.timestamp);
-                const typeLabel = report.type === 'irregular' ? '⚡' : '🏢';
-                
+
+            cellData.reports.slice(0, 3).forEach((report) => {
                 popupContent += `
                     <div class="data-item">
-                        <div>
-                            <div class="data-values">
-                                <span class="data-badge">소음 ${report.noise}</span>
-                                <span class="data-badge">빛 ${report.light}</span>
-                                <span class="data-badge">냄새 ${report.odor}</span>
-                                <span class="data-badge">혼잡 ${report.crowd}</span>
-                                ${report.wheelchair ? '<span class="data-badge">♿</span>' : ''}
-                            </div>
-                            <div style="font-size: 10px; color: #6b7280; margin-top: 2px;">
-                                ${typeLabel} ${timeAgo}
-                            </div>
+                        <div class="data-values">
+                            <span class="data-badge">소음 ${report.noise}</span>
+                            <span class="data-badge">빛 ${report.light}</span>
+                            <span class="data-badge">냄새 ${report.odor}</span>
+                            <span class="data-badge">혼잡 ${report.crowd}</span>
                         </div>
-                        <button class="delete-btn" onclick="window.sensmapApp.deleteReport('${gridKey}', ${report.id})">
-                            삭제
-                        </button>
                     </div>
                 `;
             });
-            
-            if (cellData.reports.length > 3) {
-                popupContent += `<div style="text-align: center; font-size: 11px; color: #6b7280; margin-top: 8px;">+${cellData.reports.length - 3}개 더</div>`;
-            }
-            
+
             popupContent += `</div>`;
         }
 
-        popupContent += `</div>`;
+        // ✅ 시간표 영역 추가
+        popupContent += `
+                </div>
+                <div class="popup-timetable" style="flex:1; min-width:200px; max-width:220px;">
+                    <label style="font-weight:600; font-size:13px; display:block; margin-bottom:4px;">시간표</label>
+                    <div class="timetable" style="position:relative;">
+                        <div class="timetable-header">
+                            <div class="timetable-cell"></div>
+                            <div class="timetable-cell">월</div>
+                            <div class="timetable-cell">화</div>
+                            <div class="timetable-cell">수</div>
+                            <div class="timetable-cell">목</div>
+                            <div class="timetable-cell">금</div>
+                            <div class="timetable-cell">토</div>
+                            <div class="timetable-cell">일</div>
+                        </div>
+                        <div class="timetable-body" id="popupTimetableBody"></div>
+                    </div>
+                </div>
+            </div>
+        `;
 
         const popup = L.popup({
-            maxWidth: 300,
+            maxWidth: 550, // ✅ 팝업 가로 크기 확장
             className: 'custom-popup'
         })
         .setLatLng(latlng)
         .setContent(popupContent)
         .openOn(this.map);
 
-        // Add event listeners to popup buttons
+        // 팝업 열리면 시간표 생성 + 색칠
         setTimeout(() => {
-            document.querySelectorAll('.action-btn.start, .action-btn.end').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    const type = btn.dataset.type;
-                    const lat = parseFloat(btn.dataset.lat);
-                    const lng = parseFloat(btn.dataset.lng);
-                    this.setRoutePoint(type, L.latLng(lat, lng));
-                    this.map.closePopup();
-                    if (!this.isRouteMode) {
-                        this.toggleRouteMode();
-                    }
-                });
-            });
+            this.generateTimetableInPopup();
+            if (hasData) {
+                const lastReport = cellData.reports[cellData.reports.length - 1];
+                this.colorTimetableInPopup(lastReport);
+            }
         }, 100);
     }
+
+
+    generateTimetableInPopup() {
+        const timetableBody = document.getElementById('popupTimetableBody');
+        if (!timetableBody) return;
+        timetableBody.innerHTML = '';
+
+        for (let hour = 0; hour < 24; hour++) {
+            const row = document.createElement('div');
+            row.classList.add('timetable-row');
+
+            const hourCell = document.createElement('div');
+            hourCell.classList.add('timetable-cell', 'timetable-hour');
+            hourCell.textContent = `${hour}:00`;
+            row.appendChild(hourCell);
+
+            for (let day = 0; day < 7; day++) {
+                const cell = document.createElement('div');
+                cell.classList.add('timetable-cell');
+                cell.dataset.day = day;
+                cell.dataset.hour = hour;
+                row.appendChild(cell);
+            }
+            timetableBody.appendChild(row);
+        }
+    }
+
+    colorTimetableInPopup(report) {
+        const start = new Date(report.timestamp);
+        const end = new Date(start.getTime() + report.duration * 60 * 1000);
+
+        const current = new Date(start);
+        while (current < end) {
+            let day = current.getDay();
+            day = (day === 0 ? 6 : day - 1);
+
+            const hour = current.getHours();
+            const selector = `#popupTimetableBody .timetable-cell[data-day="${day}"][data-hour="${hour}"]`;
+            const cell = document.querySelector(selector);
+            if (cell) {
+                cell.style.background = '#1a73e8';
+                cell.style.color = '#fff';
+            }
+            current.setMinutes(current.getMinutes() + 30);
+        }
+    }
+
+
+
 
     // Opens the sensory input panel for users to submit or edit sensory data.
     // 사용자가 감각 데이터를 입력하거나 수정할 수 있도록 감각 정보 입력 패널을 엽니다.
     openSensoryPanel() {
         this.closePanels();
         document.getElementById('sidePanel').classList.add('open');
+
+        this.generateTimetable(); // 시간표 생성
+
+        if (this.clickedLocation) {
+            const gridKey = this.getGridKey(this.clickedLocation);
+            const cellData = this.gridData.get(gridKey);
+
+            if (cellData && cellData.reports.length > 0) {
+                const lastReport = cellData.reports[cellData.reports.length - 1]; 
+                this.colorTimetableForReport(lastReport); // ✅ 시간표 색칠
+            }
+        }
     }
+
+
+    generateTimetable() {
+        const timetableBody = document.getElementById('timetableBody');
+        timetableBody.innerHTML = '';
+
+        for (let hour = 0; hour < 24; hour++) {
+            const row = document.createElement('div');
+            row.classList.add('timetable-row');
+
+            // 시간 표시
+            const hourCell = document.createElement('div');
+            hourCell.classList.add('timetable-cell', 'timetable-hour');
+            hourCell.textContent = `${hour}:00`;
+            row.appendChild(hourCell);
+
+            // 요일별 셀
+            for (let day = 0; day < 7; day++) {
+                const cell = document.createElement('div');
+                cell.classList.add('timetable-cell');
+                cell.dataset.day = day;
+                cell.dataset.hour = hour;
+                // 클릭 불가 → 이벤트 없음
+                row.appendChild(cell);
+            }
+
+        timetableBody.appendChild(row);
+    }
+
+    }
+
+
 
     // Opens the user profile panel by first closing any open panels, then adding the 'open' class to the profile panel to make it visible.
     // 사용자 프로필 패널을 열기 위해, 먼저 다른 패널들을 닫고 'profilePanel' 요소에 'open' 클래스를 추가하여 보이도록 만듭니다.
@@ -609,37 +699,35 @@ class SensmapApp {
         if (!this.clickedLocation) return;
 
         const formData = new FormData(e.target);
-        const selectedType = document.querySelector('.type-option.selected').dataset.type;
-        
+        let durationMinutes = parseInt(formData.get('duration'), 10);
+
+        // ✅ 30분 단위 보정
+        if (isNaN(durationMinutes) || durationMinutes < 30) durationMinutes = 30;
+        else durationMinutes = Math.round(durationMinutes / 30) * 30;
+
         const reportData = {
             id: Date.now(),
             timestamp: Date.now(),
-            type: selectedType,
             noise: parseInt(formData.get('noise')),
             light: parseInt(formData.get('light')),
             odor: parseInt(formData.get('odor')),
             crowd: parseInt(formData.get('crowd')),
             wheelchair: formData.get('wheelchair') === 'on',
-            location: {
-                lat: this.clickedLocation.lat,
-                lng: this.clickedLocation.lng
-            }
+            duration: durationMinutes, // ✅ 보정된 값 저장
+            location: { lat: this.clickedLocation.lat, lng: this.clickedLocation.lng }
         };
 
         this.addSensoryData(this.clickedLocation, reportData);
-        
-        // Reset form and close panel
+        this.colorTimetableForReport(reportData); // 시간표 자동 색칠
+
+        // 폼 초기화 및 패널 닫기
         e.target.reset();
         document.querySelectorAll('.range-slider').forEach(slider => {
             slider.parentNode.querySelector('.range-value').textContent = slider.value;
         });
-        document.querySelectorAll('.type-option').forEach(o => o.classList.remove('selected'));
-        document.querySelector('.type-option[data-type="irregular"]').classList.add('selected');
-        
         this.closePanels();
         this.map.closePopup();
         this.clickedLocation = null;
-        
         this.showToast('감각 정보가 저장되었습니다!', 'success');
     }
 
@@ -661,6 +749,39 @@ class SensmapApp {
         this.refreshVisualization();
         this.showToast('감각 프로필이 업데이트되었습니다!', 'success');
     }
+
+    colorTimetableForReport(report) {
+        const start = new Date(report.timestamp);
+        const end = new Date(start.getTime() + report.duration * 60 * 1000);
+
+        // 시간표 초기화
+        document.querySelectorAll('#timetableBody .timetable-cell').forEach(cell => {
+            cell.style.background = '';
+            cell.style.color = '';
+        });
+
+        const current = new Date(start);
+        while (current < end) {
+            let day = current.getDay();
+            day = (day === 0 ? 6 : day - 1); // 월=0, 화=1
+
+            const hour = current.getHours();
+            const selector = `#timetableBody .timetable-cell[data-day="${day}"][data-hour="${hour}"]`;
+            const cell = document.querySelector(selector);
+
+            if (cell) {
+                cell.style.background = '#1a73e8';
+                cell.style.color = '#fff';
+            }
+
+            current.setMinutes(current.getMinutes() + 30);
+        }
+    }
+
+
+
+
+
 
     // Add new sensory report data to the grid cell corresponding to the given location.
     // 위치에 해당하는 그리드 셀에 새로운 감각 보고 데이터를 추가합니다.
