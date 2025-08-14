@@ -12,7 +12,9 @@ class SensmapApp {
         this.currentRoute = null;
         this.clickedLocation = null;
         this.sensoryLayers = L.layerGroup().addTo(this.map);
-        
+        this.manualTimetableSelection = new Set(); // "day-hour" 키 모음
+
+
         // Initialize throttled refresh function
         this.throttledRefreshVisualization = this.throttle(this.refreshVisualization.bind(this), 100);
         
@@ -27,6 +29,8 @@ class SensmapApp {
         // Hide loading overlay after initialization
         this.hideLoadingOverlay();
     }
+
+
 
     // Hide loading overlay and show the main application
     // 로딩 오버레이를 숨기고 메인 애플리케이션을 표시합니다
@@ -495,14 +499,32 @@ class SensmapApp {
         .openOn(this.map);
 
         // 팝업 열리면 시간표 생성 + 색칠
+        // 팝업 열리면 시간표 생성 + 색칠
         setTimeout(() => {
             this.generateTimetableInPopup();
             if (hasData) {
                 const lastReport = cellData.reports[cellData.reports.length - 1];
-                this.colorTimetableInPopup(lastReport);
+                if (lastReport.manualSchedule) {
+                    this.colorPopupTimetableForManualSchedule(lastReport.manualSchedule);
+                } else {
+                    this.colorTimetableInPopup(lastReport);
+                }
             }
         }, 100);
+
     }
+
+    colorPopupTimetableForManualSchedule(scheduleArr) {
+        scheduleArr.forEach(({ day, hour }) => {
+            const selector = `#popupTimetableBody .timetable-cell[data-day="${day}"][data-hour="${hour}"]`;
+            const cell = document.querySelector(selector);
+            if (cell) {
+                cell.style.background = '#1a73e8';
+                cell.style.color = '#fff';
+            }
+        });
+    }
+
 
 
     generateTimetableInPopup() {
@@ -560,6 +582,7 @@ class SensmapApp {
         document.getElementById('sidePanel').classList.add('open');
 
         this.generateTimetable(); // 시간표 생성
+        this.manualTimetableSelection.clear();
 
         if (this.clickedLocation) {
             const gridKey = this.getGridKey(this.clickedLocation);
@@ -572,7 +595,6 @@ class SensmapApp {
         }
     }
 
-
     generateTimetable() {
         const timetableBody = document.getElementById('timetableBody');
         timetableBody.innerHTML = '';
@@ -581,25 +603,41 @@ class SensmapApp {
             const row = document.createElement('div');
             row.classList.add('timetable-row');
 
-            // 시간 표시
             const hourCell = document.createElement('div');
             hourCell.classList.add('timetable-cell', 'timetable-hour');
             hourCell.textContent = `${hour}:00`;
             row.appendChild(hourCell);
 
-            // 요일별 셀
             for (let day = 0; day < 7; day++) {
                 const cell = document.createElement('div');
-                cell.classList.add('timetable-cell');
+                cell.classList.add('timetable-cell', 'selectable');
                 cell.dataset.day = day;
                 cell.dataset.hour = hour;
-                // 클릭 불가 → 이벤트 없음
                 row.appendChild(cell);
             }
 
-        timetableBody.appendChild(row);
+            timetableBody.appendChild(row);
+        }
+
+        this.enableTimetableInteractions();
     }
 
+
+
+    enableTimetableInteractions() {
+        this.manualTimetableSelection.clear();
+        document.querySelectorAll('#timetableBody .timetable-cell.selectable').forEach(cell => {
+            cell.addEventListener('click', () => {
+                const key = `${cell.dataset.day}-${cell.dataset.hour}`;
+                if (cell.classList.contains('selected')) {
+                    cell.classList.remove('selected');
+                    this.manualTimetableSelection.delete(key);
+                } else {
+                    cell.classList.add('selected');
+                    this.manualTimetableSelection.add(key);
+                }
+            });
+        });
     }
 
 
@@ -705,9 +743,14 @@ class SensmapApp {
         if (isNaN(durationMinutes) || durationMinutes < 30) durationMinutes = 30;
         else durationMinutes = Math.round(durationMinutes / 30) * 30;
 
+        const selectedTypeEl = document.querySelector('.type-option.selected');
+        const type = selectedTypeEl ? selectedTypeEl.dataset.type : 'irregular'; // 'irregular' | 'regular'
+
+
         const reportData = {
             id: Date.now(),
             timestamp: Date.now(),
+            type,
             noise: parseInt(formData.get('noise')),
             light: parseInt(formData.get('light')),
             odor: parseInt(formData.get('odor')),
@@ -718,7 +761,21 @@ class SensmapApp {
         };
 
         this.addSensoryData(this.clickedLocation, reportData);
-        this.colorTimetableForReport(reportData); // 시간표 자동 색칠
+        
+        if (this.manualTimetableSelection.size > 0) {
+            reportData.manualSchedule = Array.from(this.manualTimetableSelection).map(k => {
+                const [day, hour] = k.split('-').map(Number);
+                return { day, hour }; // day: 0=월, 6=일 (현재 UI 기준), hour: 0~23
+            });
+
+            // 시간표 색칠: 사용자가 선택한 칸들
+            this.colorTimetableForManualSchedule(reportData.manualSchedule);
+
+        } else {
+            // ▼ 수동 선택이 없으면 기존 "현재시간 + 예상지속시간" 자동 색칠
+            this.colorTimetableForReport(reportData);
+        }
+
 
         // 폼 초기화 및 패널 닫기
         e.target.reset();
@@ -749,6 +806,28 @@ class SensmapApp {
         this.refreshVisualization();
         this.showToast('감각 프로필이 업데이트되었습니다!', 'success');
     }
+
+    colorTimetableForManualSchedule(scheduleArr) {
+        // 초기화
+        document.querySelectorAll('#timetableBody .timetable-cell').forEach(cell => {
+            if (!cell.classList.contains('timetable-hour')) {
+                cell.style.background = '';
+                cell.style.color = '';
+                cell.classList.remove('selected');
+            }
+        });
+        // 선택된 칸 표시
+        scheduleArr.forEach(({ day, hour }) => {
+            const selector = `#timetableBody .timetable-cell[data-day="${day}"][data-hour="${hour}"]`;
+            const cell = document.querySelector(selector);
+            if (cell) {
+                cell.style.background = '#1a73e8';
+                cell.style.color = '#fff';
+                cell.classList.add('selected');
+            }
+        });
+    }
+
 
     colorTimetableForReport(report) {
         const start = new Date(report.timestamp);
@@ -841,19 +920,32 @@ class SensmapApp {
             let hasWheelchairIssue = false;
 
             cellData.reports.forEach(report => {
-                const timeDecay = this.calculateTimeDecay(report.timestamp, report.type, currentTime);
-                
-                if (timeDecay > 0.1) { // Only consider non-expired data
-                    const weight = timeDecay;
+                let weight = 0;
+
+                if (report.manualSchedule && Array.isArray(report.manualSchedule)) {
+                    // 현재가 수동 스케줄에 해당하면 weight=1, 아니면 0
+                    const now = new Date();
+                    let day = now.getDay();       // 0=일, 6=토
+                    day = (day === 0 ? 6 : day - 1); // 0=월, 6=일로 변환 (우리 UI 기준)
+                    const hour = now.getHours();
+                    const isActive = report.manualSchedule.some(s => s.day === day && s.hour === hour);
+                    weight = isActive ? 1 : 0;
+                } else {
+                    // 기존 일시적/지속적 decay
+                    const timeDecay = this.calculateTimeDecay(report.timestamp, report.type, currentTime);
+                    weight = timeDecay > 0.1 ? timeDecay : 0;
+                }
+
+                if (weight > 0) {
                     weightedScores.noise += report.noise * weight;
                     weightedScores.light += report.light * weight;
                     weightedScores.odor += report.odor * weight;
                     weightedScores.crowd += report.crowd * weight;
                     totalWeight += weight;
-                    
                     if (report.wheelchair) hasWheelchairIssue = true;
                 }
             });
+
 
             if (totalWeight === 0) return; // No valid data
 
@@ -1643,3 +1735,5 @@ try {
     
     console.error('Failed to initialize SensmapApp:', error);
 }
+
+
