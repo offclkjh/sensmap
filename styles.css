@@ -1653,7 +1653,6 @@ html, body {
 .timetable-row .timetable-cell {
     background: white;
     color: #374151;
-    cursor: not-allowed; /* 클릭 불가 표시 */
 }
 
 .timetable-hour {
@@ -1669,4 +1668,12 @@ html, body {
     z-index: 10;
     pointer-events: none;
     transition: top 0.2s linear;
+}
+/* 시간표 셀 선택 모드 */
+.timetable-cell.selectable {
+    cursor: pointer; /* 클릭 가능 */
+}
+.timetable-cell.selected {
+    background: #1a73e8 !important;
+    color: #fff !important;
 }
