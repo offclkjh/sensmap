@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 const userRoutes = require('./User');
-const sheetsRoutes = require('./sheetsRoutes');
 const config = require('./config');
 const { connectDB } = require('./db');
 
@@ -15,7 +14,6 @@ app.use(express.json());
 
 // --- 라우트 설정 ---
 app.use('/api/users', userRoutes);
-app.use('/api/sheets', sheetsRoutes);
 
 // --- 데이터베이스 연결 풀 설정 ---
 const pool = new Pool(config.database);
@@ -276,12 +274,6 @@ async function startServer() {
             console.log(`   POST /api/users/signup - 회원가입`);
             console.log(`   POST /api/users/signin - 로그인`);
             console.log(`   GET  /api/users/profile - 사용자 프로필 (인증 필요)`);
-            console.log(`   POST /api/sheets/sensory-data - Google Sheets에 감각 데이터 추가`);
-            console.log(`   POST /api/sheets/user-profile - Google Sheets에 사용자 프로필 추가`);
-            console.log(`   GET  /api/sheets/sensory-data - Google Sheets에서 감각 데이터 조회`);
-            console.log(`   GET  /api/sheets/analytics - Google Sheets에서 분석 데이터 조회`);
-            console.log(`   GET  /api/sheets/export/:sheetName - Google Sheets 데이터 CSV 내보내기`);
-            console.log(`   GET  /api/sheets/status - Google Sheets 연결 상태 확인`);
             console.log(`========================================`);
 
             // 1시간마다 만료된 데이터 정리
