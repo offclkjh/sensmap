@@ -311,7 +311,30 @@
                     <small id="durationHelp" style="font-size: 11px; color: #6b7280; margin-top: 4px; display: block;">비워두면 기본값이 적용됩니다</small>
                 </div>
 
-                <div class="form-group">
+                
+                <section class="timetable-section" id="timetableSection" aria-label="시간표">
+  <div class="timetable-header">
+    <div class="timetable-title">시간표</div>
+    <div class="timetable-date" id="timetableDateLabel"></div>
+    <div class="timetable-select" id="timetableSelectInfo" aria-live="polite"></div>
+  </div>
+
+  <!-- ★ 요일 버튼 추가 -->
+  <div class="timetable-days" id="timetableDays">
+  <button type="button" data-day="0">일</button>
+  <button type="button" data-day="1">월</button>
+  <button type="button" data-day="2">화</button>
+  <button type="button" data-day="3">수</button>
+  <button type="button" data-day="4">목</button>
+  <button type="button" data-day="5">금</button>
+  <button type="button" data-day="6">토</button>
+</div>
+
+
+  <div class="timetable-grid" id="timetableGrid" role="grid" aria-label="요일별 시간표"></div>
+</section>
+
+<div class="form-group">
                     <label class="checkbox-label">
                         <input type="checkbox" name="wheelchair" id="wheelchairInput">
                         <span>♿ 휠체어 접근 제약</span>
