@@ -45,6 +45,8 @@ class SensmapApp {
         this.checkTutorialCompletion();
         this.initializeHamburgerMenu();
 
+        this.initTimetable();
+
         this.hideLoadingOverlay();
     }
 
@@ -228,6 +230,9 @@ class SensmapApp {
                     reportData[field] = null;
                 }
             });
+
+            // 시간표에 즉시 반영 (선택한 슬롯이 있으면 그 범위, 아니면 현재시간~지속시간)
+            this.applyReportToTimetable(reportData);
 
             // 로딩 상태 표시
             const submitButton = e.target.querySelector('button[type="submit"]');
@@ -1916,6 +1921,165 @@ class SensmapApp {
             return `주소 로드 실패`;
         }
     }
+
+    // --- Timetable UI (오늘 기준 30분 단위, 24행 x 2열) ---
+    initTimetable() {
+  const today = new Date().getDay(); // 0=일~6=토
+  this.currentDay = today;
+
+  const dayButtons = document.querySelectorAll('#timetableDays button');
+  dayButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const day = parseInt(btn.dataset.day, 10);
+      this.currentDay = day;
+      this.buildTimetableForDay(day);
+      this.highlightDayButton(day);
+    });
+  });
+
+  this.buildTimetableForDay(today);
+  this.highlightDayButton(today);
+}
+
+buildTimetableForDay(dayIndex) {
+  const grid = document.getElementById('timetableGrid');
+  if (!grid) return;
+
+  const frag = document.createDocumentFragment();
+  for (let h = 0; h < 24; h++) {
+    const label = document.createElement('div');
+    label.className = 'time-label';
+    label.textContent = String(h).padStart(2, '0') + ':00';
+    frag.appendChild(label);
+
+    for (let half = 0; half < 2; half++) {
+      const cell = document.createElement('div');
+      cell.className = 'time-cell';
+      const slot = h * 2 + half;
+      cell.dataset.slot = String(slot);
+      cell.dataset.day = dayIndex;
+
+      // ★ 반드시 클릭 이벤트 추가
+      cell.addEventListener('click', () => this.onTimeCellClick(cell));
+
+      frag.appendChild(cell);
+    }
+  }
+  grid.innerHTML = '';
+  grid.appendChild(frag);
+}
+
+
+highlightDayButton(dayIndex) {
+  const buttons = document.querySelectorAll('#timetableDays button');
+  buttons.forEach(b => b.classList.remove('active'));
+  const activeBtn = document.querySelector(`#timetableDays button[data-day="${dayIndex}"]`);
+  if (activeBtn) activeBtn.classList.add('active');
+}
+
+
+
+    // --- Timetable selection helpers ---
+    onTimeCellClick(cell) {
+        const slot = parseInt(cell.dataset.slot, 10);
+        if (!Number.isFinite(slot)) return;
+        if (!this._tmSelection || this._tmSelection.locked) {
+            this._tmSelection = { start: slot, end: slot, locked: false };
+        } else {
+            this._tmSelection.end = slot;
+            if (this._tmSelection.end < this._tmSelection.start) {
+                const t = this._tmSelection.start;
+                this._tmSelection.start = this._tmSelection.end;
+                this._tmSelection.end = t;
+            }
+            this._tmSelection.locked = true;
+        }
+        this.updateTimetableSelectionUI();
+    }
+
+    clearTimetableSelection() {
+        this._tmSelection = null;
+        this.updateTimetableSelectionUI();
+    }
+
+    updateTimetableSelectionUI() {
+        const grid = document.getElementById('timetableGrid');
+        if (!grid) return;
+        grid.querySelectorAll('.time-cell').forEach(c => c.classList.remove('selected'));
+        const info = document.getElementById('timetableSelectInfo');
+        if (!this._tmSelection) {
+            if (info) info.textContent = '';
+            return;
+        }
+        const { start, end } = this._tmSelection;
+        for (let s = start; s <= end; s++) {
+            const c = grid.querySelector(`.time-cell[data-slot="${s}"]`);
+            if (c) c.classList.add('selected');
+        }
+        const startMin = start * 30;
+        const endMin = (end + 1) * 30;
+        const label = `${this._toHHMM(startMin)} ~ ${this._toHHMM(endMin)}`;
+        if (info) info.textContent = `선택된 시간: ${label}`;
+    }
+
+    _toHHMM(mins) {
+        const h = Math.floor(mins / 60);
+        const m = mins % 60;
+        return String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0');
+    }
+
+    _rangeFromSelectionOrNow(duration, type) {
+        const now = new Date();
+        const nowMinExact = now.getHours() * 60 + now.getMinutes();
+        // Default if duration missing: use settings per type
+        const dur = Number.isFinite(duration) && duration > 0 ? duration : (this.durationSettings?.[type]?.default ?? 60);
+
+        if (this._tmSelection && Number.isFinite(this._tmSelection.start)) {
+            const startMin = this._tmSelection.start * 30;
+            const endMin = Math.min(1440, (this._tmSelection.end + 1) * 30);
+            return { startMin, endMin, source: 'manual' };
+        } else {
+            const startSlot = Math.floor(nowMinExact / 30);
+            const endMinExact = nowMinExact + dur;
+            const endSlot = Math.floor((endMinExact - 1) / 30);
+            const startMin = startSlot * 30;
+            const endMin = Math.min(1440, (endSlot + 1) * 30);
+            return { startMin, endMin, source: 'auto' };
+        }
+    }
+
+    applyReportToTimetable(reportData) {
+        try {
+            const grid = document.getElementById('timetableGrid');
+            if (!grid) return;
+            const { startMin, endMin, source } = this._rangeFromSelectionOrNow(reportData.duration, reportData.type);
+            this.paintTimetableRange(startMin, endMin, reportData);
+            // Selection is one-shot; clear after applying
+            if (source === 'manual') this.clearTimetableSelection();
+        } catch (e) {
+            console.warn('시간표 반영 실패:', e);
+        }
+    }
+
+    paintTimetableRange(startMin, endMin, reportData) {
+    const grid = document.getElementById('timetableGrid');
+    if (!grid) return;
+    const startSlot = Math.max(0, Math.floor(startMin / 30));
+    const endSlot = Math.min(47, Math.floor((endMin - 1) / 30));
+
+    // 툴팁 문자열 구성
+    const tip = `소음:${reportData.noise ?? '-'} / 빛:${reportData.light ?? '-'} / 냄새:${reportData.odor ?? '-'} / 혼잡:${reportData.crowd ?? '-'} (${reportData.type === 'irregular' ? '일시적' : '지속적'})`;
+
+    for (let s = startSlot; s <= endSlot; s++) {
+    const c = grid.querySelector(`.time-cell[data-slot="${s}"]`);
+    if (c) {
+        c.classList.add('filled');
+        c.title = tip;
+    }
+}
+
+}
+
 }
 
 document.addEventListener('DOMContentLoaded', () => {
