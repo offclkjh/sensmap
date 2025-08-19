@@ -1663,3 +1663,103 @@ html {
 ::-webkit-scrollbar-thumb:hover {
     background: #a8a8a8;
 }
+
+/* --- Timetable (오늘 시간표) --- */
+.timetable-section {
+    margin-top: 16px;
+    padding-top: 8px;
+    border-top: 1px dashed #e5e7eb;
+}
+.timetable-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+.timetable-title {
+    font-weight: 700;
+    color: #111827;
+    font-size: 14px;
+}
+.timetable-date {
+    color: #6b7280;
+    font-size: 12px;
+}
+.timetable-grid {
+    display: grid;
+    grid-template-columns: 56px 1fr 1fr; /* hour label + two 30-min slots */
+    gap: 6px 6px;
+    max-height: 360px;
+    overflow-y: auto;
+    padding-right: 2px;
+}
+.time-label {
+    text-align: right;
+    padding-right: 8px;
+    color: #6b7280;
+    font-size: 12px;
+    line-height: 22px;
+}
+.time-cell {
+    height: 22px;
+    background: #f8fafc;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    position: relative;
+}
+.time-cell.current {
+    outline: 2px solid #ef4444; /* 현재 슬롯 강조 */
+    outline-offset: -2px;
+}
+.timetable-help {
+    display: block;
+    margin-top: 6px;
+    color: #9ca3af;
+    font-size: 11px;
+}
+
+
+/* --- Timetable interaction --- */
+.time-cell.selected {
+    outline: 2px dashed #3b82f6;
+    outline-offset: -2px;
+}
+.time-cell.filled {
+    background: rgba(59, 130, 246, 0.14);
+    border-color: #93c5fd;
+    box-shadow: inset 0 0 0 1px rgba(59,130,246,0.2);
+}
+.timetable-select {
+    margin-left: auto;
+    margin-right: 4px;
+    font-size: 12px;
+    color: #374151;
+}
+.time-badge {
+    position: absolute;
+    right: 6px;
+    top: 3px;
+    font-size: 10px;
+    color: #1f2937;
+    opacity: 0.7;
+}
+
+.timetable-days {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.timetable-days button {
+  flex: 1;
+  padding: 4px 6px;
+  font-size: 12px;
+  border: 1px solid #d1d5db;
+  background: #f9fafb;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.timetable-days button.active {
+  background: #3b82f6;
+  color: white;
+  border-color: #2563eb;
+}
