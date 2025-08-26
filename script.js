@@ -518,6 +518,9 @@ class SensmapApp {
 
     setupEventListeners() {
         try {
+
+
+
             // Tutorial controls
             document.getElementById('tutorialNext')?.addEventListener('click', () => this.nextTutorialStep());
             document.getElementById('tutorialPrev')?.addEventListener('click', () => this.prevTutorialStep());
@@ -541,6 +544,10 @@ class SensmapApp {
             document.querySelectorAll('.sensory-option').forEach(option => {
                 option.addEventListener('click', () => this.setSensoryFilter(option.dataset.sensory));
             });
+
+                        // script.js -> setupEventListeners() 내부의 튜토리얼 부분만 교체
+            
+
 
             document.getElementById('intensitySlider')?.addEventListener('input', (e) => {
                 document.getElementById('intensityValue').textContent = e.target.value;
@@ -618,6 +625,8 @@ class SensmapApp {
                     }
                 });
             });
+            
+
 
             // Settings controls
             document.getElementById('colorBlindMode')?.addEventListener('change', (e) => this.toggleColorBlindMode(e.target.checked));
@@ -1467,12 +1476,17 @@ class SensmapApp {
 
     showTutorial() {
         const overlay = document.getElementById('tutorialOverlay');
-        if (overlay) {
-            overlay.classList.add('show');
-            this.currentTutorialStep = 1;
-            this.updateTutorialStep();
-        }
+        if (!overlay) return;
+
+        overlay.classList.add('show');
+
+        // DOM 기준으로 스텝 수 자동 계산 (하드코딩 X)
+        this.totalTutorialSteps = document.querySelectorAll('.tutorial-step').length;
+        this.currentTutorialStep = 1;
+
+        this.updateTutorialStep();
     }
+
 
     completeTutorial() {
         const overlay = document.getElementById('tutorialOverlay');
